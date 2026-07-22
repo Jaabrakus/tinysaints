@@ -439,7 +439,7 @@ export async function getHomeRoomState(identity: Identity) {
   await ensureDatabase();
   await upsertUser(identity);
   const db = getDb();
-  let [home] = await db
+  const [home] = await db
     .select({ slug: rooms.slug })
     .from(roomMembers)
     .innerJoin(rooms, eq(roomMembers.roomId, rooms.id))
@@ -448,21 +448,8 @@ export async function getHomeRoomState(identity: Identity) {
     .limit(1);
 
   if (!home) {
-    const [roomCount] = await db.select({ count: sql<number>`count(*)` }).from(rooms);
-    if (Number(roomCount?.count ?? 0) === 0) {
-      await createSeedRoom(identity);
-      [home] = await db
-        .select({ slug: rooms.slug })
-        .from(roomMembers)
-        .innerJoin(rooms, eq(roomMembers.roomId, rooms.id))
-        .where(eq(roomMembers.userId, identity.id))
-        .orderBy(desc(rooms.updatedAt))
-        .limit(1);
-    }
-  }
-
-  if (!home) {
-    throw new RoomError("Open a valid invite link to join your first room.", 403);
+    const slug = await createRoom(identity, "My first room");
+    return getRoomState(slug, identity);
   }
   return getRoomState(home.slug, identity);
 }

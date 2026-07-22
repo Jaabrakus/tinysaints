@@ -281,6 +281,9 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
             ? current
             : nextState,
         );
+        if (!slug && !inviteToken) {
+          window.history.replaceState({}, "", `/?room=${encodeURIComponent(nextState.room.slug)}`);
+        }
         if (inviteToken) window.history.replaceState({}, "", `/?room=${encodeURIComponent(slug)}`);
         setError(null);
       } catch (loadError) {

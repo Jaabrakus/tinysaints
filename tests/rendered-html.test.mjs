@@ -37,6 +37,8 @@ test("requires identity and drives the product from persisted room state", async
   assert.match(roomRoute, /getHomeRoomState/);
   assert.match(roomService, /insert\(messages\)/);
   assert.match(roomService, /insert\(roomMembers\)/);
+  assert.match(roomService, /createRoom\(identity, "My first room"\)/);
+  assert.doesNotMatch(roomService, /Open a valid invite link to join your first room/);
   assert.match(roomService, /insert\(votes\)/);
   assert.match(roomService, /publishedAt/);
   assert.match(roomService, /insert\(buildFiles\)/);
