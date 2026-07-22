@@ -221,7 +221,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [state, setState] = useState<RoomState | null>(null);
   const slug = state?.room.slug ?? initialSlug;
   const [draft, setDraft] = useState("");
-  const [activeTab, setActiveTab] = useState<"preview" | "code" | "diff" | "showcase" | "activity">(
+  const [activeTab, setActiveTab] = useState<"preview" | "code" | "forks" | "diff" | "showcase" | "activity">(
     "code",
   );
   const [activeSourcePath, setActiveSourcePath] = useState<SourcePath>("index.html");
@@ -1383,7 +1383,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
           )}
 
           <div className="build-tabs" role="tablist" aria-label="Build views">
-            {(["preview", "code", "diff", "showcase", "activity"] as const).map((tabName) => (
+            {(["preview", "code", "forks", "diff", "showcase", "activity"] as const).map((tabName) => (
               <button
                 type="button"
                 role="tab"
@@ -1642,6 +1642,135 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 </section>
               </div>
             )}
+            {activeTab === "forks" && state && (
+              <div className="fork-workspace">
+                <header className="fork-workspace__header">
+                  <div>
+                    <span>PROJECT LINEAGE</span>
+                    <h3>Parallel work, one visible family tree</h3>
+                    <p>Open a branch, build independently, present it, then converge the strongest work.</p>
+                  </div>
+                  <div className="fork-workspace__stats" aria-label="Fork statistics">
+                    <span><strong>{state.branches.length}</strong> child forks</span>
+                    <span><strong>{state.showcase.length}</strong> presented</span>
+                    <span><strong>r{state.room.revision}</strong> room revision</span>
+                  </div>
+                </header>
+
+                <div className="fork-flow" aria-label="Parent and child branch map">
+                  <section className="fork-flow__level fork-flow__level--parent">
+                    <span className="fork-flow__level-label">PARENT</span>
+                    {state.room.parentRoom ? (
+                      <Link
+                        className="fork-node fork-node--parent"
+                        href={`/?room=${encodeURIComponent(state.room.parentRoom.slug)}`}
+                      >
+                        <span className="fork-node__icon">↖</span>
+                        <div>
+                          <small>UPSTREAM ROOM</small>
+                          <strong>{state.room.parentRoom.name}</strong>
+                          <p>Updated {activityTime(state.room.parentRoom.updatedAt)}</p>
+                        </div>
+                        <b>open →</b>
+                      </Link>
+                    ) : (
+                      <div className="fork-node fork-node--root">
+                        <span className="fork-node__icon">✳</span>
+                        <div>
+                          <small>SHARED ROOT</small>
+                          <strong>This room begins the project</strong>
+                          <p>Every team fork branches from this lineage.</p>
+                        </div>
+                        <b>origin</b>
+                      </div>
+                    )}
+                  </section>
+
+                  <span className="fork-flow__connector" aria-hidden="true" />
+
+                  <section className="fork-flow__level fork-flow__level--current">
+                    <span className="fork-flow__level-label">CURRENT</span>
+                    <article className="fork-node fork-node--current">
+                      <span className="fork-node__icon">◆</span>
+                      <div>
+                        <small>{state.room.parentRoom ? "WORKING FORK" : "UNIFIED ROOM"}</small>
+                        <strong>{state.room.name}</strong>
+                        <p>
+                          {state.messages.length} messages · {state.members.length} makers · {state.published ? `live v${state.published.version}` : "not published"}
+                        </p>
+                      </div>
+                      <b>you are here</b>
+                    </article>
+                    {state.room.parentRoom && (
+                      <div className="fork-flow__actions">
+                        <button
+                          type="button"
+                          onClick={presentToParent}
+                          disabled={Boolean(busy) || !state.published || Boolean(state.staged)}
+                        >
+                          {busy === "present-parent" ? "presenting…" : state.room.presentedAt ? "refresh presentation" : "present to parent"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={mergeToParent}
+                          disabled={Boolean(busy) || !state.published || Boolean(state.staged)}
+                        >
+                          {busy === "merge-parent" ? "combining…" : "propose merge"}
+                        </button>
+                      </div>
+                    )}
+                  </section>
+
+                  <span className="fork-flow__connector fork-flow__connector--split" aria-hidden="true" />
+
+                  <section className="fork-flow__level fork-flow__level--children">
+                    <span className="fork-flow__level-label">CHILD FORKS</span>
+                    {state.branches.length > 0 ? (
+                      <div className="fork-children">
+                        {state.branches.map((branch) => {
+                          const branchContent = (
+                            <>
+                              <span className="fork-node__icon">⑂</span>
+                              <div>
+                                <small>{branch.presentedAt ? "PRESENTED FOR REVIEW" : "BUILDING IN PARALLEL"}</small>
+                                <strong>{branch.name}</strong>
+                                <p>{branch.ownerName} · updated {activityTime(branch.updatedAt)}</p>
+                              </div>
+                              <b>{branch.role ? "open →" : "private"}</b>
+                            </>
+                          );
+                          return branch.role ? (
+                            <Link
+                              className={`fork-node fork-node--child ${branch.presentedAt ? "is-presented" : ""}`}
+                              href={`/?room=${encodeURIComponent(branch.slug)}`}
+                              key={branch.slug}
+                            >
+                              {branchContent}
+                            </Link>
+                          ) : (
+                            <div
+                              className={`fork-node fork-node--child fork-node--locked ${branch.presentedAt ? "is-presented" : ""}`}
+                              title="This branch is visible in the lineage but private to its owner"
+                              key={branch.slug}
+                            >
+                              {branchContent}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="fork-empty">
+                        <strong>No child forks yet</strong>
+                        <p>Use “fork this app” to split off, work independently, and return with a proposal.</p>
+                        <button type="button" onClick={fork} disabled={!state.published || Boolean(busy) || Boolean(state.staged)}>
+                          {busy === "fork" ? "forking…" : "create the first fork →"}
+                        </button>
+                      </div>
+                    )}
+                  </section>
+                </div>
+              </div>
+            )}
             {activeTab === "diff" && state?.staged && (
               <div className="diff-workspace">
                 <div className="diff-workspace__header">
@@ -1784,7 +1913,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 ))}
               </div>
             )}
-            {!visibleBuild && activeTab !== "activity" && activeTab !== "diff" && activeTab !== "showcase" && (
+            {!visibleBuild && activeTab !== "activity" && activeTab !== "diff" && activeTab !== "showcase" && activeTab !== "forks" && (
               <div className="empty-build">The first published artifact will appear here.</div>
             )}
           </div>
