@@ -7,11 +7,12 @@ async function source(path) {
 }
 
 test("requires identity and drives the product from persisted room state", async () => {
-  const [page, client, roomRoute, roomService] = await Promise.all([
+  const [page, client, roomRoute, roomService, convergenceRoute] = await Promise.all([
     source("../app/page.tsx"),
     source("../app/RoomClient.tsx"),
     source("../app/api/room/route.ts"),
     source("../lib/room-service.ts"),
+    source("../app/api/converge/route.ts"),
   ]);
 
   assert.match(page, /requireChatGPTUser\("\/"\)/);
@@ -49,6 +50,12 @@ test("requires identity and drives the product from persisted room state", async
   assert.match(client, /\/api\/export\?room=/);
   assert.match(client, /agent bridge/);
   assert.match(client, /MCP ENDPOINT/);
+  assert.match(client, /converge ·/);
+  assert.match(client, /\/api\/converge/);
+  assert.match(convergenceRoute, /getConvergenceContext/);
+  assert.match(convergenceRoute, /generateConvergencePatch/);
+  assert.match(convergenceRoute, /sourceKind: "convergence"/);
+  assert.match(roomService, /isNotNull\(rooms\.presentedAt\)/);
   assert.match(client, /sandbox="allow-scripts"/);
   assert.match(client, /activeTab === "showcase"/);
   assert.doesNotMatch(client, /const\s+(messages|rooms|members)\s*=\s*\[/);
@@ -111,6 +118,8 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
   assert.match(agentRoute, /authenticateAgentToken/);
   assert.match(agentRoute, /stageAgentProjectPatch/);
   assert.match(mcpRoute, /submit_project_patch/);
+  assert.match(mcpRoute, /get_convergence_context/);
+  assert.match(mcpRoute, /submit_convergence_patch/);
   assert.doesNotMatch(client, /OPENAI_API_KEY|ANTHROPIC_API_KEY|VENICE_API_KEY/);
   assert.match(notices, /Copyright \(c\) 2026 Moonshot AI/);
   assert.match(notices, /MIT License/);

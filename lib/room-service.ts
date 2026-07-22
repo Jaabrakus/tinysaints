@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { getChatGPTUser } from "../app/chatgpt-auth";
 import { ensureDatabase, getDb } from "../db";
 import {
@@ -22,6 +22,7 @@ import {
   type ArtifactSourceFile,
 } from "./starter-artifact";
 import { mergeForkSourceSnapshots } from "./fork-merge";
+import { projectChangesBetween } from "./convergence";
 
 export class RoomError extends Error {
   constructor(
@@ -1051,6 +1052,9 @@ export async function stageAgentProjectPatch(
     agentLabel?: string;
     title?: string;
     summary?: string;
+    sourceKind?: "personal-agent" | "convergence";
+    rationale?: string;
+    changeNotes?: string[];
   },
 ) {
   if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) {
@@ -1080,10 +1084,20 @@ export async function stageAgentProjectPatch(
   if (new Set(changes.map((change) => change.path)).size !== changes.length) {
     throw new RoomError("An agent proposal cannot change the same path twice.");
   }
-  const isPersonalAgent = Boolean(input.agentLabel?.trim());
-  const agentLabel = isPersonalAgent
+  const isConvergence = input.sourceKind === "convergence";
+  const isPersonalAgent = !isConvergence && Boolean(input.agentLabel?.trim());
+  const agentLabel = isConvergence
+    ? "Convergence agent"
+    : isPersonalAgent
     ? cleanText(input.agentLabel!, 80) || "Personal agent"
     : "Shared editor";
+  const suppliedChangeNotes = Array.isArray(input.changeNotes)
+    ? input.changeNotes
+        .filter((note): note is string => typeof note === "string")
+        .map((note) => cleanText(note, 140))
+        .filter(Boolean)
+        .slice(0, 12)
+    : [];
 
   const room = await getRoomForUser(slugValue, identity);
   const db = getDb();
@@ -1180,14 +1194,14 @@ export async function stageAgentProjectPatch(
       roomId: sql<string>`${room.id}`.as("room_id"),
       version: sql<number>`${nextVersion}`.as("version"),
       status: sql<string>`${"staged"}`.as("status"),
-      sourceKind: sql<string>`${isPersonalAgent ? "personal-agent" : "manual"}`.as("source_kind"),
-      agentLabel: sql<string | null>`${isPersonalAgent ? agentLabel : null}`.as("agent_label"),
+      sourceKind: sql<string>`${isConvergence ? "convergence" : isPersonalAgent ? "personal-agent" : "manual"}`.as("source_kind"),
+      agentLabel: sql<string | null>`${isPersonalAgent || isConvergence ? agentLabel : null}`.as("agent_label"),
       name: sql<string>`${base.name}`.as("name"),
       proposalTitle: sql<string>`${cleanText(input.title ?? `${agentLabel}: ${changes.length} file proposal`, 100)}`.as("proposal_title"),
-      rationale: sql<string>`${isPersonalAgent ? `${identity.displayName}'s ${agentLabel} submitted a whole-project patch for room review.` : `${identity.displayName} saved a source-level change for the room to review.`}`.as("rationale"),
+      rationale: sql<string>`${cleanText(input.rationale ?? (isConvergence ? `${agentLabel} compared the team's presented forks and submitted one combined patch for room review.` : isPersonalAgent ? `${identity.displayName}'s ${agentLabel} submitted a whole-project patch for room review.` : `${identity.displayName} saved a source-level change for the room to review.`), 500)}`.as("rationale"),
       summary: sql<string>`${cleanText(input.summary ?? `${changes.length} project file${changes.length === 1 ? "" : "s"} proposed by ${agentLabel}.`, 240)}`.as("summary"),
       changesJson: sql<string>`${JSON.stringify([
-        ...changeLabels.slice(0, 12),
+        ...(suppliedChangeNotes.length > 0 ? suppliedChangeNotes : changeLabels.slice(0, 12)),
         "Created one immutable whole-project snapshot",
         "Reset backing so the room can review this exact patch",
       ])}`.as("changes_json"),
@@ -1852,6 +1866,145 @@ export async function mergeForkToParent(
   }
 
   return parentRoom.slug;
+}
+
+export async function getConvergenceContext(
+  slugValue: string,
+  identity: Identity,
+) {
+  const room = await getRoomForUser(slugValue, identity);
+  const db = getDb();
+  const [publishedRows, stagedRows, recentMessages, presentedRooms] = await Promise.all([
+    db
+      .select()
+      .from(builds)
+      .where(and(eq(builds.roomId, room.id), eq(builds.status, "published")))
+      .orderBy(desc(builds.version))
+      .limit(1),
+    db
+      .select({ id: builds.id })
+      .from(builds)
+      .where(and(eq(builds.roomId, room.id), eq(builds.status, "staged")))
+      .limit(1),
+    db
+      .select({
+        id: messages.id,
+        author: users.displayName,
+        body: messages.body,
+        createdAt: messages.createdAt,
+      })
+      .from(messages)
+      .innerJoin(users, eq(messages.authorId, users.id))
+      .where(eq(messages.roomId, room.id))
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(30),
+    db
+      .select({
+        id: rooms.id,
+        slug: rooms.slug,
+        name: rooms.name,
+        ownerName: users.displayName,
+        presentedAt: rooms.presentedAt,
+      })
+      .from(rooms)
+      .innerJoin(users, eq(rooms.ownerId, users.id))
+      .where(and(eq(rooms.parentRoomId, room.id), isNotNull(rooms.presentedAt)))
+      .orderBy(desc(rooms.presentedAt))
+      .limit(6),
+  ]);
+  const published = publishedRows[0];
+  if (!published) throw new RoomError("Publish a starting build before convergence.", 409);
+  if (stagedRows[0]) {
+    throw new RoomError("Ship or replace the current staged proposal before converging team forks.", 409);
+  }
+  if (presentedRooms.length === 0) {
+    throw new RoomError("A teammate must present a published fork before convergence.", 409);
+  }
+
+  const currentFiles = asArtifactSourceFiles(await ensureBuildFiles(published));
+  const branchContexts = (
+    await Promise.all(
+      presentedRooms.map(async (branchRoom) => {
+        const [branchPublishedRows, branchRootRows] = await Promise.all([
+          db
+            .select()
+            .from(builds)
+            .where(and(eq(builds.roomId, branchRoom.id), eq(builds.status, "published")))
+            .orderBy(desc(builds.version))
+            .limit(1),
+          db
+            .select()
+            .from(builds)
+            .where(and(eq(builds.roomId, branchRoom.id), eq(builds.version, 1)))
+            .limit(1),
+        ]);
+        const branchPublished = branchPublishedRows[0];
+        const branchRoot = branchRootRows[0];
+        if (!branchPublished || !branchRoot?.parentBuildId) return null;
+        const [ancestor] = await db
+          .select()
+          .from(builds)
+          .where(
+            and(
+              eq(builds.id, branchRoot.parentBuildId),
+              eq(builds.roomId, room.id),
+            ),
+          )
+          .limit(1);
+        if (!ancestor) return null;
+        const [ancestorFiles, branchFiles] = await Promise.all([
+          ensureBuildFiles(ancestor).then(asArtifactSourceFiles),
+          ensureBuildFiles(branchPublished).then(asArtifactSourceFiles),
+        ]);
+        const changes = projectChangesBetween(ancestorFiles, branchFiles);
+        if (changes.length === 0) return null;
+        return {
+          slug: branchRoom.slug,
+          name: branchRoom.name,
+          ownerName: branchRoom.ownerName,
+          presentedAt: branchRoom.presentedAt!,
+          version: branchPublished.version,
+          branchPointBuildId: ancestor.id,
+          changes,
+        };
+      }),
+    )
+  ).filter((branch): branch is NonNullable<typeof branch> => Boolean(branch));
+  if (branchContexts.length === 0) {
+    throw new RoomError("The presented forks do not contain changes to converge.", 409);
+  }
+  recentMessages.reverse();
+  return {
+    room,
+    published,
+    currentFiles,
+    branches: branchContexts,
+    messages: recentMessages,
+  };
+}
+
+export async function getAgentConvergenceSnapshot(slugValue: string, identity: Identity) {
+  const context = await getConvergenceContext(slugValue, identity);
+  return {
+    room: {
+      slug: context.room.slug,
+      name: context.room.name,
+      note: context.room.note,
+      revision: context.room.revision,
+    },
+    baseBuild: {
+      id: context.published.id,
+      version: context.published.version,
+      files: context.currentFiles,
+    },
+    presentedForks: context.branches,
+    recentConversation: context.messages,
+    submit: {
+      tool: "submit_convergence_patch",
+      required: ["room", "expectedRevision", "baseBuildId", "changes"],
+      note: "Submit one combined proposal after comparing every presented fork. Humans still review and ship it.",
+    },
+  };
 }
 
 export async function getGenerationContext(

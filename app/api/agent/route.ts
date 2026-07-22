@@ -1,5 +1,6 @@
 import {
   authenticateAgentToken,
+  getAgentConvergenceSnapshot,
   getAgentProjectSnapshot,
   getRoomState,
   RoomError,
@@ -20,8 +21,11 @@ export async function GET(request: Request) {
   try {
     const identity = await authenticateAgentToken(request);
     const room = new URL(request.url).searchParams.get("room") ?? "";
+    const mode = new URL(request.url).searchParams.get("mode");
     if (!room) throw new RoomError("Choose a room with ?room=room-slug.");
-    return Response.json(await getAgentProjectSnapshot(room, identity), {
+    return Response.json(mode === "convergence"
+      ? await getAgentConvergenceSnapshot(room, identity)
+      : await getAgentProjectSnapshot(room, identity), {
       headers: { "cache-control": "no-store" },
     });
   } catch (error) {
@@ -43,9 +47,20 @@ export async function POST(request: Request) {
       agentLabel?: string;
       title?: string;
       summary?: string;
+      mode?: string;
     };
     const room = payload.room ?? "";
     if (!room) throw new RoomError("The room slug is required.");
+    const convergence = payload.mode === "convergence";
+    if (convergence) {
+      const context = await getAgentConvergenceSnapshot(room, identity);
+      if (
+        context.room.revision !== payload.expectedRevision ||
+        context.baseBuild.id !== payload.baseBuildId
+      ) {
+        throw new RoomError("The parent or a presented fork changed. Read the convergence context again.", 409);
+      }
+    }
     await stageAgentProjectPatch(room, identity, {
       expectedRevision: payload.expectedRevision ?? -1,
       baseBuildId: payload.baseBuildId ?? "",
@@ -53,6 +68,7 @@ export async function POST(request: Request) {
       agentLabel: payload.agentLabel ?? "Personal agent",
       title: payload.title,
       summary: payload.summary,
+      sourceKind: convergence ? "convergence" : undefined,
     });
     return Response.json(await getRoomState(room, identity), { status: 201 });
   } catch (error) {

@@ -1170,6 +1170,15 @@ textarea:focus-visible {
   opacity: 0.4;
 }
 
+.converge-button {
+  border-color: rgb(202 255 69 / 0.28);
+  color: var(--lime);
+}
+
+.converge-button:hover:not(:disabled) {
+  background: rgb(202 255 69 / 0.08);
+}
+
 .agent-gateway {
   display: grid;
   flex: 0 0 auto;

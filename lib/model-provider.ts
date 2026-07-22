@@ -1,4 +1,5 @@
 import type { GeneratedArtifact } from "./room-service";
+import type { ProjectChange } from "./convergence";
 import {
   assembleGeneratedArtifact,
   sourceFilesFromGenerated,
@@ -20,6 +21,26 @@ export type ArtifactGenerationInput = {
     version: number;
     files: ArtifactSourceFile[];
   };
+};
+
+export type ConvergenceGenerationInput = {
+  room: { name: string; note: string };
+  messages: Array<{ author: string; body: string }>;
+  current: { version: number; files: ArtifactSourceFile[] };
+  branches: Array<{
+    name: string;
+    ownerName: string;
+    version: number;
+    changes: ProjectChange[];
+  }>;
+};
+
+export type ConvergenceProposal = {
+  proposalTitle: string;
+  rationale: string;
+  summary: string;
+  changes: string[];
+  patches: ProjectChange[];
 };
 
 export class ModelProviderError extends Error {
@@ -74,6 +95,39 @@ const artifactSchema = {
     "changes",
     "source",
   ],
+} as const;
+
+const convergenceSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    schemaVersion: { type: "string", enum: ["1"] },
+    proposalTitle: { type: "string", maxLength: 100 },
+    rationale: { type: "string", maxLength: 500 },
+    summary: { type: "string", maxLength: 320 },
+    changes: {
+      type: "array",
+      minItems: 3,
+      maxItems: 12,
+      items: { type: "string", maxLength: 140 },
+    },
+    patches: {
+      type: "array",
+      minItems: 1,
+      maxItems: 40,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          path: { type: "string", maxLength: 120 },
+          operation: { type: "string", enum: ["upsert", "delete"] },
+          content: { type: "string", maxLength: 65_536 },
+        },
+        required: ["path", "operation", "content"],
+      },
+    },
+  },
+  required: ["schemaVersion", "proposalTitle", "rationale", "summary", "changes", "patches"],
 } as const;
 
 function requireString(value: unknown, field: string, maxLength: number) {
@@ -249,5 +303,149 @@ export async function generateArtifact(
     changes: validated.changes,
     html,
     files: sourceFilesFromGenerated(validated.source),
+  };
+}
+
+export async function generateConvergencePatch(
+  input: ConvergenceGenerationInput,
+): Promise<ConvergenceProposal> {
+  const apiKey =
+    process.env.MOONSHOT_API_KEY ??
+    process.env.KIMI_API_KEY ??
+    process.env.AI_API_KEY;
+  if (!apiKey) {
+    throw new ModelProviderError(
+      "The convergence agent is not configured yet. Add the server-side MOONSHOT_API_KEY secret first.",
+      503,
+      "model_not_configured",
+    );
+  }
+  const model = process.env.AI_MODEL ?? "kimi-k3";
+  const baseUrl = (process.env.AI_BASE_URL ?? "https://api.moonshot.ai/v1").replace(/\/$/, "");
+  const thread = input.messages
+    .slice(-30)
+    .map((message) => `${message.author}: ${message.body.slice(0, 1200)}`)
+    .join("\n");
+  const currentSource = input.current.files
+    .map((file) => `--- ${file.path} ---\n${file.content}`)
+    .join("\n\n")
+    .slice(0, 110_000);
+  const forkSource = input.branches
+    .map((branch) => {
+      const changes = branch.changes.map((change) =>
+        change.content === null
+          ? `--- DELETE ${change.path} ---`
+          : `--- UPSERT ${change.path} ---\n${change.content}`,
+      ).join("\n\n");
+      return `FORK: ${branch.ownerName} · ${branch.name} · v${branch.version}\n${changes}`;
+    })
+    .join("\n\n===== NEXT PRESENTED FORK =====\n\n")
+    .slice(0, 130_000);
+
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        reasoning_effort: "low",
+        max_completion_tokens: 12_000,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are the convergence agent inside make/room. Compare every explicitly presented team fork against the main room's current project. Preserve compatible contributions, reconcile overlapping ideas using the canonical room conversation, and return the smallest coherent multi-file patch that advances the shared product. A patch is a complete file replacement or deletion, never a diff. Do not publish: your result becomes one proposal humans must inspect, back, and ship. Keep index.html and styles.css. Do not add secrets, external network calls, unsafe JavaScript capabilities, analytics, purchases, or hidden behavior. Return only the strict structured result.",
+          },
+          {
+            role: "user",
+            content: `MAIN ROOM\nName: ${input.room.name}\nPurpose: ${input.room.note}\n\nCANONICAL ROOM THREAD\n${thread}\n\nCURRENT MAIN PROJECT · v${input.current.version}\n${currentSource}\n\nPRESENTED FORK CHANGES\n${forkSource}\n\nReturn one integrated patch. Mention which forks or ideas were combined in the change notes. For delete operations, content must be an empty string.`,
+          },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "make_room_convergence",
+            strict: true,
+            schema: convergenceSchema,
+          },
+        },
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && error.name === "TimeoutError";
+    throw new ModelProviderError(
+      timedOut
+        ? "The convergence agent took too long. Present fewer or smaller forks and try again."
+        : "The convergence agent could not be reached. Try again in a moment.",
+      503,
+      timedOut ? "provider_timeout" : "provider_unavailable",
+    );
+  }
+  if (!response.ok) {
+    throw new ModelProviderError(
+      response.status === 429
+        ? "The convergence agent is at its current rate limit. Try again shortly."
+        : "The convergence model rejected this comparison.",
+      response.status === 429 || response.status >= 500 ? 503 : 502,
+      response.status === 429 ? "provider_rate_limited" : "provider_error",
+    );
+  }
+  const payload = (await response.json()) as {
+    choices?: Array<{ finish_reason?: string; message?: { content?: string } }>;
+  };
+  const choice = payload.choices?.[0];
+  if (choice?.finish_reason !== "stop" || !choice.message?.content) {
+    throw new ModelProviderError(
+      "The convergence agent did not finish a complete proposal.",
+      502,
+      "incomplete_output",
+    );
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(choice.message.content);
+  } catch {
+    throw new ModelProviderError("The convergence agent returned malformed output.", 502, "invalid_json");
+  }
+  if (!raw || typeof raw !== "object") {
+    throw new ModelProviderError("The convergence agent returned an invalid proposal.", 502, "invalid_output");
+  }
+  const value = raw as Record<string, unknown>;
+  if (value.schemaVersion !== "1" || !Array.isArray(value.changes) || !Array.isArray(value.patches)) {
+    throw new ModelProviderError("The convergence agent returned an invalid proposal.", 502, "invalid_output");
+  }
+  if (value.changes.length < 3 || value.changes.length > 12 || value.patches.length < 1 || value.patches.length > 40) {
+    throw new ModelProviderError("The convergence proposal exceeded its safety bounds.", 502, "invalid_output");
+  }
+  const seenPaths = new Set<string>();
+  const patches = value.patches.map((entry, index) => {
+    if (!entry || typeof entry !== "object") {
+      throw new ModelProviderError(`Convergence patch ${index + 1} is invalid.`, 502, "invalid_output");
+    }
+    const patch = entry as Record<string, unknown>;
+    const path = requireString(patch.path, `patch ${index + 1} path`, 120);
+    if (seenPaths.has(path)) {
+      throw new ModelProviderError(`The convergence agent changed ${path} twice.`, 502, "invalid_output");
+    }
+    seenPaths.add(path);
+    if (patch.operation !== "upsert" && patch.operation !== "delete") {
+      throw new ModelProviderError(`Convergence patch ${index + 1} has an invalid operation.`, 502, "invalid_output");
+    }
+    if (typeof patch.content !== "string") {
+      throw new ModelProviderError(`Convergence patch ${index + 1} has invalid content.`, 502, "invalid_output");
+    }
+    return { path, content: patch.operation === "delete" ? null : patch.content.slice(0, 65_536) };
+  });
+  return {
+    proposalTitle: requireString(value.proposalTitle, "proposal title", 100),
+    rationale: requireString(value.rationale, "rationale", 500),
+    summary: requireString(value.summary, "summary", 320),
+    changes: value.changes.map((change, index) => requireString(change, `change ${index + 1}`, 140)),
+    patches,
   };
 }

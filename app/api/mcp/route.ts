@@ -1,5 +1,6 @@
 import {
   authenticateAgentToken,
+  getAgentConvergenceSnapshot,
   getAgentProjectSnapshot,
   RoomError,
   stageAgentProjectPatch,
@@ -41,6 +42,50 @@ const tools = [
         agentLabel: { type: "string" },
         title: { type: "string" },
         summary: { type: "string" },
+        changes: {
+          type: "array",
+          minItems: 1,
+          maxItems: 40,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              path: { type: "string" },
+              content: { type: ["string", "null"] },
+            },
+            required: ["path", "content"],
+          },
+        },
+      },
+      required: ["room", "expectedRevision", "baseBuildId", "changes"],
+    },
+  },
+  {
+    name: "get_convergence_context",
+    title: "Compare presented team forks",
+    description: "Read the main project plus complete changes from every fork its owner explicitly presented.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { room: { type: "string", description: "The parent Make Room slug." } },
+      required: ["room"],
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "submit_convergence_patch",
+    title: "Submit combined team proposal",
+    description: "After comparing every presented fork, stage one combined multi-file proposal for human review.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        room: { type: "string" },
+        expectedRevision: { type: "integer", minimum: 0 },
+        baseBuildId: { type: "string" },
+        title: { type: "string" },
+        summary: { type: "string" },
+        rationale: { type: "string" },
         changes: {
           type: "array",
           minItems: 1,
@@ -101,6 +146,10 @@ export async function POST(request: Request) {
         const snapshot = await getAgentProjectSnapshot(String(args.room ?? ""), identity);
         return result(rpc.id, { content: [{ type: "text", text: JSON.stringify(snapshot) }] });
       }
+      if (name === "get_convergence_context") {
+        const snapshot = await getAgentConvergenceSnapshot(String(args.room ?? ""), identity);
+        return result(rpc.id, { content: [{ type: "text", text: JSON.stringify(snapshot) }] });
+      }
       if (name === "submit_project_patch") {
         const room = String(args.room ?? "");
         await stageAgentProjectPatch(room, identity, {
@@ -115,6 +164,32 @@ export async function POST(request: Request) {
         });
         return result(rpc.id, {
           content: [{ type: "text", text: "Patch staged for room review. It is not published." }],
+        });
+      }
+      if (name === "submit_convergence_patch") {
+        const room = String(args.room ?? "");
+        const context = await getAgentConvergenceSnapshot(room, identity);
+        const expectedRevision = Number(args.expectedRevision ?? -1);
+        const baseBuildId = String(args.baseBuildId ?? "");
+        if (
+          context.room.revision !== expectedRevision ||
+          context.baseBuild.id !== baseBuildId
+        ) {
+          throw new RoomError("The parent or a presented fork changed. Read the convergence context again.", 409);
+        }
+        await stageAgentProjectPatch(room, identity, {
+          expectedRevision,
+          baseBuildId,
+          changes: Array.isArray(args.changes)
+            ? args.changes as Array<{ path: string; content: string | null }>
+            : [],
+          sourceKind: "convergence",
+          title: typeof args.title === "string" ? args.title : undefined,
+          summary: typeof args.summary === "string" ? args.summary : undefined,
+          rationale: typeof args.rationale === "string" ? args.rationale : undefined,
+        });
+        return result(rpc.id, {
+          content: [{ type: "text", text: "Combined fork proposal staged for human review. It is not published." }],
         });
       }
       return rpcError(rpc.id, -32602, "Unknown tool.");

@@ -135,6 +135,7 @@ function proposalSourceLabel(sourceKind: string) {
   if (sourceKind === "manual") return "MANUAL EDIT";
   if (sourceKind === "kimi") return "KIMI SYNTHESIS";
   if (sourceKind === "personal-agent") return "PERSONAL AGENT";
+  if (sourceKind === "convergence") return "CONVERGENCE AGENT";
   if (sourceKind === "fork-merge") return "FORK CONVERGENCE";
   return sourceKind.replaceAll("-", " ").toUpperCase() || "ROOM PATCH";
 }
@@ -355,6 +356,33 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
           : "Kimi could not finish the patch.",
       );
       setNotice("Nothing changed · the published build is still safe");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function convergeForks() {
+    if (!state?.model.configured || state.staged || state.showcase.length === 0 || busy) return;
+    setBusy("converge");
+    setError(null);
+    setNotice(`Comparing ${state.showcase.length} presented fork${state.showcase.length === 1 ? "" : "s"} with the main project…`);
+    try {
+      const response = await fetch("/api/converge", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ slug }),
+      });
+      const nextState = await readResponse<RoomState>(response);
+      setState(nextState);
+      setActiveTab("diff");
+      setNotice("One convergence proposal is staged · inspect the combined files before backing");
+    } catch (convergenceError) {
+      setError(
+        convergenceError instanceof Error
+          ? convergenceError.message
+          : "The presented forks could not be converged.",
+      );
+      setNotice("Nothing changed · every presented fork and the published parent are still safe");
     } finally {
       setBusy(null);
     }
@@ -1240,6 +1268,23 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               >
                 agent bridge
               </button>
+              {Boolean(state?.showcase.length) && (
+                <button
+                  className="quiet-button converge-button"
+                  type="button"
+                  onClick={() => void convergeForks()}
+                  disabled={!state?.model.configured || Boolean(state?.staged) || Boolean(busy)}
+                  title={
+                    !state?.model.configured
+                      ? "Configure the room model before convergence"
+                      : state?.staged
+                        ? "Ship or replace the current proposal first"
+                        : "Compare every presented fork and stage one combined proposal"
+                  }
+                >
+                  {busy === "converge" ? "converging…" : `converge · ${state?.showcase.length ?? 0}`}
+                </button>
+              )}
               <button
                 className="quiet-button"
                 type="button"
@@ -1327,6 +1372,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 ))}
               </div>
               <p className="agent-gateway__foot">
+                Connected agents also receive <strong>get_convergence_context</strong> and <strong>submit_convergence_patch</strong>, so your own AI can serve as the main-room convergence agent even when the shared Kimi button is not configured. {" "}
                 Hosted provider secrets stay with that agent or in its own server environment; they are never placed in this browser or shared room.
                 Because this prototype is owner-only, a remote hosted agent also needs the site owner&apos;s private Sites access header; local agents and project exports do not.
               </p>
@@ -1371,6 +1417,8 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                     ? "room source edit"
                     : state.staged.sourceKind === "personal-agent"
                       ? state.staged.agentLabel ?? "personal agent"
+                    : state.staged.sourceKind === "convergence"
+                      ? `${state.showcase.length} presented team forks`
                     : state.staged.sourceKind === "fork-merge"
                       ? "converged fork snapshot"
                       : `${state.staged.sourceMessageIds.length} source messages`}
