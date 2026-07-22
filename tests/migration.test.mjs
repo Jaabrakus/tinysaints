@@ -90,6 +90,28 @@ test("upgrades the deployed schema with immutable source snapshots", async () =>
     /CHECK constraint failed/,
   );
 
+  database.exec(await migration("0003_complex_skaar.sql"));
+  const tokenColumns = database.prepare("PRAGMA table_info(agent_tokens)").all();
+  assert.ok(tokenColumns.some((column) => column.name === "token_hash"));
+  database
+    .prepare("INSERT INTO users (id, display_name) VALUES (?, ?)")
+    .run("user-agent", "Agent owner");
+  database
+    .prepare(
+      "INSERT INTO agent_tokens (id, user_id, name, token_hash, token_prefix) VALUES (?, ?, ?, ?, ?)",
+    )
+    .run("token-1", "user-agent", "Laptop agent", "f".repeat(64), "mr_live_ffff…");
+  assert.throws(
+    () => database
+      .prepare(
+        "INSERT INTO agent_tokens (id, user_id, name, token_hash, token_prefix) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("token-2", "user-agent", "Duplicate", "f".repeat(64), "mr_live_ffff…"),
+    /UNIQUE constraint failed/,
+  );
+  database.prepare("DELETE FROM users WHERE id = ?").run("user-agent");
+  assert.equal(database.prepare("SELECT count(*) AS count FROM agent_tokens").get().count, 0);
+
   database.prepare("DELETE FROM builds WHERE id = ?").run("build-1");
   assert.equal(
     database.prepare("SELECT count(*) AS count FROM build_files").get().count,

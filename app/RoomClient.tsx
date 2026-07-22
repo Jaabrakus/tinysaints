@@ -96,6 +96,14 @@ type RoomState = {
     threshold: number;
     voterIds: string[];
   };
+  agentTokens: Array<{
+    id: string;
+    name: string;
+    tokenPrefix: string;
+    createdAt: string;
+    lastUsedAt: string | null;
+    revokedAt: string | null;
+  }>;
   model: { configured: boolean; name: string };
 };
 
@@ -239,6 +247,10 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       : window.localStorage.getItem("make-room-agent-model") ?? "qwen3:4b",
   );
   const [agentInstruction, setAgentInstruction] = useState("");
+  const [gatewayOpen, setGatewayOpen] = useState(false);
+  const [agentTokenName, setAgentTokenName] = useState("My coding agent");
+  const [revealedAgentToken, setRevealedAgentToken] = useState<string | null>(null);
+  const [siteOrigin, setSiteOrigin] = useState("");
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const loadSequence = useRef(0);
   const editorGutter = useRef<HTMLPreElement>(null);
@@ -279,6 +291,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
 
   useEffect(() => {
     const initialLoad = window.setTimeout(() => {
+      setSiteOrigin(window.location.origin);
       const inviteToken = new URLSearchParams(window.location.hash.slice(1)).get("invite");
       void loadRoom(inviteToken);
     }, 0);
@@ -464,6 +477,40 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       }
     } catch (inviteError) {
       setError(inviteError instanceof Error ? inviteError.message : "The invite could not be created.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function createGatewayToken(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!state || busy) return;
+    setBusy("create-agent-token");
+    setError(null);
+    try {
+      const result = await mutateRoom<{ token: string; state: RoomState }>("create-agent-token", {
+        name: agentTokenName,
+      });
+      setState(result.state);
+      setRevealedAgentToken(result.token);
+      setNotice("Agent key created · copy it now because it will not be shown again");
+    } catch (tokenError) {
+      setError(tokenError instanceof Error ? tokenError.message : "The agent key could not be created.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function revokeGatewayToken(tokenId: string) {
+    if (!state || busy) return;
+    setBusy(`revoke-${tokenId}`);
+    setError(null);
+    try {
+      setState(await mutateRoom<RoomState>("revoke-agent-token", { tokenId }));
+      setRevealedAgentToken(null);
+      setNotice("Agent key revoked · future requests with it are blocked");
+    } catch (tokenError) {
+      setError(tokenError instanceof Error ? tokenError.message : "The agent key could not be revoked.");
     } finally {
       setBusy(null);
     }
@@ -1177,6 +1224,22 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                     ? `live · v${state.published.version}`
                     : "waiting"}
               </div>
+              <a
+                className="quiet-button export-link"
+                href={state ? `/api/export?room=${encodeURIComponent(slug)}&status=${state.staged ? "staged" : "published"}` : undefined}
+                aria-disabled={!state || (!state.staged && !state.published)}
+                title="Download a Git-ready project with a zero-dependency local runner"
+              >
+                export ↓
+              </a>
+              <button
+                className="quiet-button"
+                type="button"
+                onClick={() => setGatewayOpen((current) => !current)}
+                aria-expanded={gatewayOpen}
+              >
+                agent bridge
+              </button>
               <button
                 className="quiet-button"
                 type="button"
@@ -1188,6 +1251,87 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               </button>
             </div>
           </div>
+
+          {gatewayOpen && state && (
+            <section className="agent-gateway" aria-label="Personal agent gateway">
+              <div className="agent-gateway__intro">
+                <div>
+                  <span>YOUR AGENT BRIDGE</span>
+                  <h3>Give any coding agent the whole folder.</h3>
+                </div>
+                <p>
+                  ChatGPT, Codex, Claude, Venice, or a local model can read the same canonical snapshot and submit one multi-file proposal. Every proposal still waits for room review.
+                </p>
+              </div>
+              <div className="agent-gateway__grid">
+                <form onSubmit={createGatewayToken}>
+                  <label htmlFor="agent-token-name">Connection name</label>
+                  <div>
+                    <input
+                      id="agent-token-name"
+                      value={agentTokenName}
+                      onChange={(event) => setAgentTokenName(event.target.value)}
+                      maxLength={50}
+                      placeholder="Claude on my laptop"
+                    />
+                    <button type="submit" disabled={!agentTokenName.trim() || Boolean(busy)}>
+                      {busy === "create-agent-token" ? "creating…" : "create key"}
+                    </button>
+                  </div>
+                  <small>Stored as a one-way hash. The full key appears once.</small>
+                </form>
+                <div className="agent-gateway__endpoints">
+                  <span>MCP ENDPOINT</span>
+                  <code>{siteOrigin ? `${siteOrigin}/api/mcp` : "/api/mcp"}</code>
+                  <span>REST PROJECT ENDPOINT</span>
+                  <code>{siteOrigin ? `${siteOrigin}/api/agent?room=${slug}` : `/api/agent?room=${slug}`}</code>
+                </div>
+              </div>
+              {revealedAgentToken && (
+                <div className="agent-gateway__secret" role="status">
+                  <span>COPY NOW · SHOWN ONCE</span>
+                  <input
+                    value={revealedAgentToken}
+                    readOnly
+                    aria-label="New personal agent bearer token"
+                    onFocus={(event) => event.currentTarget.select()}
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await navigator.clipboard.writeText(revealedAgentToken);
+                      setNotice("Agent key copied");
+                    }}
+                  >
+                    copy
+                  </button>
+                </div>
+              )}
+              <div className="agent-gateway__keys">
+                <div className="agent-gateway__keys-head">
+                  <span>PERSONAL KEYS</span>
+                  <small>Authorization: Bearer YOUR_KEY</small>
+                </div>
+                {state.agentTokens.length === 0 && <p>No keys yet. Create one for the agent on your device.</p>}
+                {state.agentTokens.map((token) => (
+                  <div className={token.revokedAt ? "is-revoked" : ""} key={token.id}>
+                    <strong>{token.name}</strong>
+                    <code>{token.tokenPrefix}</code>
+                    <small>{token.revokedAt ? "revoked" : token.lastUsedAt ? `used ${activityTime(token.lastUsedAt)}` : "never used"}</small>
+                    {!token.revokedAt && (
+                      <button type="button" onClick={() => void revokeGatewayToken(token.id)} disabled={Boolean(busy)}>
+                        revoke
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p className="agent-gateway__foot">
+                Hosted provider secrets stay with that agent or in its own server environment; they are never placed in this browser or shared room.
+                Because this prototype is owner-only, a remote hosted agent also needs the site owner&apos;s private Sites access header; local agents and project exports do not.
+              </p>
+            </section>
+          )}
 
           <div className="build-tabs" role="tablist" aria-label="Build views">
             {(["preview", "code", "diff", "showcase", "activity"] as const).map((tabName) => (

@@ -31,6 +31,8 @@ test("requires identity and drives the product from persisted room state", async
   assert.match(roomRoute, /joinRoom/);
   assert.match(roomRoute, /createRoomInvite/);
   assert.match(roomRoute, /editArtifactFile/);
+  assert.match(roomRoute, /createAgentToken/);
+  assert.match(roomRoute, /revokeAgentToken/);
   assert.match(roomRoute, /getHomeRoomState/);
   assert.match(roomService, /insert\(messages\)/);
   assert.match(roomService, /insert\(roomMembers\)/);
@@ -44,6 +46,9 @@ test("requires identity and drives the product from persisted room state", async
   assert.match(client, /action:\s*"edit-file"/);
   assert.match(client, /mutateRoom<\{ slug: string \}>\("merge-parent"\)/);
   assert.match(client, /\/api\/chat/);
+  assert.match(client, /\/api\/export\?room=/);
+  assert.match(client, /agent bridge/);
+  assert.match(client, /MCP ENDPOINT/);
   assert.match(client, /sandbox="allow-scripts"/);
   assert.match(client, /activeTab === "showcase"/);
   assert.doesNotMatch(client, /const\s+(messages|rooms|members)\s*=\s*\[/);
@@ -71,13 +76,16 @@ test("uses canonical server context and fails honestly without Kimi", async () =
 });
 
 test("keeps secrets server-side and generated code inside an opaque sandbox", async () => {
-  const [client, artifact, hosting, migration, sourceMigration, workspaceMigration, notices] = await Promise.all([
+  const [client, artifact, hosting, migration, sourceMigration, workspaceMigration, agentMigration, agentRoute, mcpRoute, notices] = await Promise.all([
     source("../app/RoomClient.tsx"),
     source("../lib/starter-artifact.ts"),
     source("../.openai/hosting.json"),
     source("../drizzle/0000_pale_iron_patriot.sql"),
     source("../drizzle/0001_collaborative_source.sql"),
     source("../drizzle/0002_previous_krista_starr.sql"),
+    source("../drizzle/0003_complex_skaar.sql"),
+    source("../app/api/agent/route.ts"),
+    source("../app/api/mcp/route.ts"),
     source("../THIRD_PARTY_NOTICES.md"),
   ]);
 
@@ -99,6 +107,11 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
   assert.match(workspaceMigration, /ADD `presented_at`/);
   assert.match(workspaceMigration, /ADD `agent_label`/);
   assert.match(workspaceMigration, /__new_build_files/);
+  assert.match(agentMigration, /CREATE TABLE `agent_tokens`/);
+  assert.match(agentRoute, /authenticateAgentToken/);
+  assert.match(agentRoute, /stageAgentProjectPatch/);
+  assert.match(mcpRoute, /submit_project_patch/);
+  assert.doesNotMatch(client, /OPENAI_API_KEY|ANTHROPIC_API_KEY|VENICE_API_KEY/);
   assert.match(notices, /Copyright \(c\) 2026 Moonshot AI/);
   assert.match(notices, /MIT License/);
 });

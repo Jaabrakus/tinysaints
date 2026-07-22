@@ -1,5 +1,6 @@
 import {
   addMessage,
+  createAgentToken,
   createRoomInvite,
   createRoom,
   editArtifactFile,
@@ -10,6 +11,7 @@ import {
   joinRoom,
   mergeForkToParent,
   presentForkToParent,
+  revokeAgentToken,
   RoomError,
   shipBuild,
   toggleVote,
@@ -72,6 +74,7 @@ export async function POST(request: Request) {
       baseBuildId?: string;
       buildId?: string;
       agentLabel?: string;
+      tokenId?: string;
     };
     const action = payload.action ?? "";
     const slug = payload.slug ?? "tiny-plans";
@@ -82,6 +85,14 @@ export async function POST(request: Request) {
     }
     if (action === "invite") {
       return Response.json({ token: await createRoomInvite(slug, identity) });
+    }
+    if (action === "create-agent-token") {
+      const token = await createAgentToken(identity, payload.name ?? "Personal coding agent");
+      return Response.json({ token, state: await getRoomState(slug, identity) }, { status: 201 });
+    }
+    if (action === "revoke-agent-token") {
+      await revokeAgentToken(identity, payload.tokenId ?? "");
+      return Response.json(await getRoomState(slug, identity));
     }
     if (action === "message") {
       await addMessage(slug, identity, payload.body ?? "");

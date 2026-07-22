@@ -1,7 +1,8 @@
-import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import { getChatGPTUser } from "../app/chatgpt-auth";
 import { ensureDatabase, getDb } from "../db";
 import {
+  agentTokens,
   buildFiles,
   builds,
   messages,
@@ -204,6 +205,10 @@ function randomToken() {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function tokenPrefix(token: string) {
+  return `${token.slice(0, 15)}…`;
+}
+
 export async function getIdentity(): Promise<Identity | null> {
   const user = await getChatGPTUser();
   if (!user) return null;
@@ -211,6 +216,75 @@ export async function getIdentity(): Promise<Identity | null> {
     id: await hashIdentity(user.email),
     displayName: cleanText(user.displayName, 80),
   };
+}
+
+export async function createAgentToken(identity: Identity, rawName: string) {
+  await ensureDatabase();
+  await upsertUser(identity);
+  const db = getDb();
+  const name = cleanText(rawName, 50) || "Personal coding agent";
+  const [countRow] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(agentTokens)
+    .where(and(eq(agentTokens.userId, identity.id), isNull(agentTokens.revokedAt)));
+  if (Number(countRow?.count ?? 0) >= 8) {
+    throw new RoomError("Revoke an old agent key before creating another one.", 409);
+  }
+  const token = `mr_live_${randomToken()}`;
+  await db.insert(agentTokens).values({
+    id: crypto.randomUUID(),
+    userId: identity.id,
+    name,
+    tokenHash: await sha256(token),
+    tokenPrefix: tokenPrefix(token),
+  });
+  return token;
+}
+
+export async function revokeAgentToken(identity: Identity, tokenId: string) {
+  await ensureDatabase();
+  const [revoked] = await getDb()
+    .update(agentTokens)
+    .set({ revokedAt: nowSql() })
+    .where(
+      and(
+        eq(agentTokens.id, tokenId.trim()),
+        eq(agentTokens.userId, identity.id),
+        isNull(agentTokens.revokedAt),
+      ),
+    )
+    .returning({ id: agentTokens.id });
+  if (!revoked) throw new RoomError("That agent key is already revoked or missing.", 404);
+}
+
+export async function authenticateAgentToken(request: Request): Promise<Identity> {
+  const authorization = request.headers.get("authorization") ?? "";
+  const match = authorization.match(/^Bearer\s+(mr_live_[a-f0-9]{64})$/i);
+  if (!match) throw new RoomError("Use a valid Make Room bearer token.", 401);
+  await ensureDatabase();
+  const db = getDb();
+  const tokenHash = await sha256(match[1]);
+  const [record] = await db
+    .select({
+      id: agentTokens.id,
+      userId: users.id,
+      displayName: users.displayName,
+    })
+    .from(agentTokens)
+    .innerJoin(users, eq(agentTokens.userId, users.id))
+    .where(and(eq(agentTokens.tokenHash, tokenHash), isNull(agentTokens.revokedAt)))
+    .limit(1);
+  if (!record) throw new RoomError("This agent token is invalid or revoked.", 401);
+  await db
+    .update(agentTokens)
+    .set({ lastUsedAt: nowSql() })
+    .where(
+      and(
+        eq(agentTokens.id, record.id),
+        sql`(${agentTokens.lastUsedAt} IS NULL OR ${agentTokens.lastUsedAt} < datetime('now', '-1 minute'))`,
+      ),
+    );
+  return { id: record.userId, displayName: record.displayName };
 }
 
 export function isKimiConfigured() {
@@ -579,6 +653,7 @@ export async function getRoomState(slugValue: string, identity: Identity) {
     forkCountRows,
     parentRoomRows,
     branchRoomRows,
+    personalAgentRows,
   ] = await Promise.all([
       db
         .select({
@@ -671,6 +746,19 @@ export async function getRoomState(slugValue: string, identity: Identity) {
         )
         .where(eq(rooms.parentRoomId, room.id))
         .orderBy(desc(rooms.updatedAt)),
+      db
+        .select({
+          id: agentTokens.id,
+          name: agentTokens.name,
+          tokenPrefix: agentTokens.tokenPrefix,
+          createdAt: agentTokens.createdAt,
+          lastUsedAt: agentTokens.lastUsedAt,
+          revokedAt: agentTokens.revokedAt,
+        })
+        .from(agentTokens)
+        .where(eq(agentTokens.userId, identity.id))
+        .orderBy(desc(agentTokens.createdAt))
+        .limit(12),
     ]);
 
   const published = activeBuildRows.find((build) => build.status === "published");
@@ -764,10 +852,100 @@ export async function getRoomState(slugValue: string, identity: Identity) {
       createdAt: build.createdAt,
     })),
     votes: { count: voteCount, myVote, threshold, voterIds },
+    agentTokens: personalAgentRows,
     model: {
       configured: isKimiConfigured(),
       name: process.env.AI_MODEL ?? "kimi-k3",
     },
+  };
+}
+
+export async function getAgentProjectSnapshot(slugValue: string, identity: Identity) {
+  const room = await getRoomForUser(slugValue, identity);
+  const db = getDb();
+  const [activeRows, messageRows] = await Promise.all([
+    db
+      .select()
+      .from(builds)
+      .where(
+        and(
+          eq(builds.roomId, room.id),
+          sql`${builds.status} IN ('published', 'staged')`,
+        ),
+      )
+      .orderBy(desc(builds.version)),
+    db
+      .select({
+        body: messages.body,
+        author: users.displayName,
+        createdAt: messages.createdAt,
+      })
+      .from(messages)
+      .innerJoin(users, eq(messages.authorId, users.id))
+      .where(eq(messages.roomId, room.id))
+      .orderBy(desc(messages.createdAt))
+      .limit(30),
+  ]);
+  const base = activeRows.find((build) => build.status === "staged") ??
+    activeRows.find((build) => build.status === "published");
+  if (!base) throw new RoomError("This room has no project snapshot yet.", 409);
+  const files = await ensureBuildFiles(base);
+  return {
+    room: {
+      slug: room.slug,
+      name: room.name,
+      note: room.note,
+      revision: room.revision,
+    },
+    baseBuild: {
+      id: base.id,
+      version: base.version,
+      status: base.status,
+      sourceKind: base.sourceKind,
+    },
+    files: files.map((file) => ({
+      path: file.path,
+      content: file.content,
+      language: file.language,
+      sha256: file.sha256,
+      byteCount: file.byteCount,
+    })),
+    recentConversation: messageRows.reverse(),
+    submit: {
+      method: "POST",
+      endpoint: "/api/agent",
+      required: ["room", "expectedRevision", "baseBuildId", "changes"],
+      changeShape: { path: "relative/file.txt", content: "complete replacement or null" },
+      note: "A submission stages one immutable proposal. It never publishes without room review.",
+    },
+  };
+}
+
+export async function getExportProjectSnapshot(
+  slugValue: string,
+  identity: Identity,
+  requestedStatus: "published" | "staged",
+) {
+  const room = await getRoomForUser(slugValue, identity);
+  const db = getDb();
+  const [build] = await db
+    .select()
+    .from(builds)
+    .where(and(eq(builds.roomId, room.id), eq(builds.status, requestedStatus)))
+    .orderBy(desc(builds.version))
+    .limit(1);
+  if (!build) {
+    throw new RoomError(
+      requestedStatus === "staged"
+        ? "This room has no staged proposal to export."
+        : "This room has no published project to export.",
+      404,
+    );
+  }
+  return {
+    room: { slug: room.slug, name: room.name, revision: room.revision },
+    build: { id: build.id, version: build.version, status: build.status },
+    files: asArtifactSourceFiles(await ensureBuildFiles(build)),
   };
 }
 
@@ -855,24 +1033,57 @@ export async function editArtifactFile(
     agentLabel?: string;
   },
 ) {
-  let sourcePath: string;
-  try {
-    sourcePath = validateArtifactPath(input.path);
-  } catch (error) {
-    throw new RoomError(error instanceof Error ? error.message : "That file path is invalid.");
-  }
-  if (input.content !== null && typeof input.content !== "string") {
-    throw new RoomError("Source content must be plain text.");
-  }
+  return stageAgentProjectPatch(slugValue, identity, {
+    changes: [{ path: input.path, content: input.content }],
+    expectedRevision: input.expectedRevision,
+    baseBuildId: input.baseBuildId,
+    agentLabel: input.agentLabel,
+  });
+}
+
+export async function stageAgentProjectPatch(
+  slugValue: string,
+  identity: Identity,
+  input: {
+    changes: Array<{ path: string; content: string | null }>;
+    expectedRevision: number;
+    baseBuildId: string;
+    agentLabel?: string;
+    title?: string;
+    summary?: string;
+  },
+) {
   if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) {
     throw new RoomError("The source revision is invalid.");
   }
   if (!input.baseBuildId.trim()) {
     throw new RoomError("The source build is missing.");
   }
-  const agentLabel = input.agentLabel
-    ? cleanText(input.agentLabel, 80)
-    : null;
+  if (!Array.isArray(input.changes) || input.changes.length < 1 || input.changes.length > 40) {
+    throw new RoomError("An agent proposal must change 1–40 project files.");
+  }
+  const changes = input.changes.map((change) => {
+    if (!change || typeof change !== "object") {
+      throw new RoomError("Every project change needs a path and content.");
+    }
+    let path: string;
+    try {
+      path = validateArtifactPath(change.path);
+    } catch (error) {
+      throw new RoomError(error instanceof Error ? error.message : "That file path is invalid.");
+    }
+    if (change.content !== null && typeof change.content !== "string") {
+      throw new RoomError(`${path} must contain plain text or null for deletion.`);
+    }
+    return { path, content: change.content };
+  });
+  if (new Set(changes.map((change) => change.path)).size !== changes.length) {
+    throw new RoomError("An agent proposal cannot change the same path twice.");
+  }
+  const isPersonalAgent = Boolean(input.agentLabel?.trim());
+  const agentLabel = isPersonalAgent
+    ? cleanText(input.agentLabel!, 80) || "Personal agent"
+    : "Shared editor";
 
   const room = await getRoomForUser(slugValue, identity);
   const db = getDb();
@@ -911,32 +1122,30 @@ export async function editArtifactFile(
   }
 
   const baseFiles = asArtifactSourceFiles(await ensureBuildFiles(base));
-  const existingFile = baseFiles.find((file) => file.path === sourcePath);
-  const isRemoval = input.content === null;
-  if (isRemoval && (sourcePath === "index.html" || sourcePath === "styles.css")) {
-    throw new RoomError("index.html and styles.css are required project files.");
+  const nextByPath = new Map(baseFiles.map((file) => [file.path, file]));
+  const changeLabels: string[] = [];
+  for (const change of changes) {
+    const existing = nextByPath.get(change.path);
+    if (change.content === null) {
+      if (change.path === "index.html" || change.path === "styles.css") {
+        throw new RoomError("index.html and styles.css are required project files.");
+      }
+      if (!existing) throw new RoomError(`${change.path} no longer exists.`, 409);
+      nextByPath.delete(change.path);
+      changeLabels.push(`Removed ${change.path}`);
+      continue;
+    }
+    nextByPath.set(change.path, {
+      path: change.path,
+      content: change.content,
+      language: inferArtifactLanguage(change.path),
+    });
+    changeLabels.push(`${existing ? "Changed" : "Added"} ${change.path}`);
   }
-  if (isRemoval && !existingFile) {
-    throw new RoomError("That project file no longer exists.", 409);
-  }
-  const nextFiles = validateArtifactFiles(
-    isRemoval
-      ? baseFiles.filter((file) => file.path !== sourcePath)
-      : existingFile
-      ? baseFiles.map((file) =>
-          file.path === sourcePath ? { ...file, content: input.content! } : file,
-        )
-      : [
-          ...baseFiles,
-          {
-            path: sourcePath,
-            content: input.content!,
-            language: inferArtifactLanguage(sourcePath),
-          },
-        ],
-  );
+  let nextFiles: ArtifactSourceFile[];
   let html: string;
   try {
+    nextFiles = validateArtifactFiles(Array.from(nextByPath.values()));
     html = assembleArtifactFiles(nextFiles, base.name);
   } catch (error) {
     throw new RoomError(
@@ -945,12 +1154,10 @@ export async function editArtifactFile(
         : "The source patch failed safety validation.",
     );
   }
-  if (
-    nextFiles.every(
-      (file, index) => file.content === baseFiles[index]?.content,
-    )
-  ) {
-    return;
+  if (nextFiles.every((file, index) =>
+    file.path === baseFiles[index]?.path && file.content === baseFiles[index]?.content
+  )) {
+    throw new RoomError("The agent proposal did not change the project.", 409);
   }
 
   const buildId = crypto.randomUUID();
@@ -973,15 +1180,15 @@ export async function editArtifactFile(
       roomId: sql<string>`${room.id}`.as("room_id"),
       version: sql<number>`${nextVersion}`.as("version"),
       status: sql<string>`${"staged"}`.as("status"),
-      sourceKind: sql<string>`${agentLabel ? "personal-agent" : "manual"}`.as("source_kind"),
-      agentLabel: sql<string | null>`${agentLabel}`.as("agent_label"),
+      sourceKind: sql<string>`${isPersonalAgent ? "personal-agent" : "manual"}`.as("source_kind"),
+      agentLabel: sql<string | null>`${isPersonalAgent ? agentLabel : null}`.as("agent_label"),
       name: sql<string>`${base.name}`.as("name"),
-      proposalTitle: sql<string>`${`${agentLabel ? `${agentLabel}: ` : ""}${isRemoval ? "Remove" : existingFile ? "Edit" : "Add"} ${sourcePath}`}`.as("proposal_title"),
-      rationale: sql<string>`${agentLabel ? `${identity.displayName}'s personal agent proposed this source change for the room to review.` : `${identity.displayName} saved a source-level change for the room to review.`}`.as("rationale"),
-      summary: sql<string>`${`${isRemoval ? "Removed" : existingFile ? "Updated" : "Added"} ${sourcePath} from ${agentLabel ?? "the shared editor"}.`}`.as("summary"),
+      proposalTitle: sql<string>`${cleanText(input.title ?? `${agentLabel}: ${changes.length} file proposal`, 100)}`.as("proposal_title"),
+      rationale: sql<string>`${isPersonalAgent ? `${identity.displayName}'s ${agentLabel} submitted a whole-project patch for room review.` : `${identity.displayName} saved a source-level change for the room to review.`}`.as("rationale"),
+      summary: sql<string>`${cleanText(input.summary ?? `${changes.length} project file${changes.length === 1 ? "" : "s"} proposed by ${agentLabel}.`, 240)}`.as("summary"),
       changesJson: sql<string>`${JSON.stringify([
-        `${isRemoval ? "Removed" : existingFile ? "Changed" : "Added"} ${sourcePath}`,
-        "Created an immutable source snapshot",
+        ...changeLabels.slice(0, 12),
+        "Created one immutable whole-project snapshot",
         "Reset backing so the room can review this exact patch",
       ])}`.as("changes_json"),
       sourceMessageIdsJson: sql<string>`${sourceMessageIdsJson}`.as(

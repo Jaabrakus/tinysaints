@@ -30,6 +30,18 @@ const schemaStatements = [
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS rooms_slug_unique ON rooms(slug)`,
   `CREATE INDEX IF NOT EXISTS rooms_parent_idx ON rooms(parent_room_id)`,
+  `CREATE TABLE IF NOT EXISTS agent_tokens (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    token_prefix TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TEXT,
+    revoked_at TEXT
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS agent_tokens_hash_unique ON agent_tokens(token_hash)`,
+  `CREATE INDEX IF NOT EXISTS agent_tokens_user_idx ON agent_tokens(user_id)`,
   `CREATE TABLE IF NOT EXISTS room_members (
     room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
