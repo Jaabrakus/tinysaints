@@ -29,7 +29,7 @@ export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
       : null;
 
   return {
-    displayName: fullName ?? email,
+    displayName: fullName?.trim() || "Maker",
     email,
     fullName,
   };
