@@ -56,7 +56,7 @@ The direct HTTP integration is deliberate for this edge deployment; the Agent SD
 
 ## Kimi Code adaptation
 
-This project adapts the bounded line-diff primitive from the MIT-licensed [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code) repository. It does not copy Kimi branding or transplant the local daemon, terminal, filesystem, or process runner into the edge worker. Those capabilities require a separately isolated runtime.
+This project adapts the bounded line-diff primitive and the chat-first pane hierarchy from the MIT-licensed [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code) repository. It keeps make/room's own visual identity and does not copy Kimi branding or transplant the local daemon, terminal, filesystem, or process runner into the edge worker. Those capabilities require a separately isolated runtime.
 
 The collaborative spin is native to make/room: source edits become immutable room proposals, every proposal has a reviewable diff, active votes attach to that exact snapshot, shipping is guarded by majority backing, and forks copy only the published source tree. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the pinned upstream commit and full MIT notice.
 

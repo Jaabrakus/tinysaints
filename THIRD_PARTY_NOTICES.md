@@ -1,14 +1,21 @@
 # Third-Party Notices
 
-## Kimi Code line-diff utility
+## Kimi Code adaptation
 
 `lib/kimi-code-diff.ts` is adapted from `apps/kimi-web/src/lib/diffLines.ts`
 in [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code), pinned to
 commit `e0f2a417691701e9bc73eaf5feebd4b667f5efab`.
 
-No Kimi Code logos, trademarks, branding assets, product UI assets, or model
-weights are copied into this project. The Kimi Code name appears here only to
-identify and attribute the upstream open-source work.
+The make/room workspace shell is also informed by the pane hierarchy and visual
+system documented in that pinned repository's `apps/kimi-web/src/App.vue`,
+`apps/kimi-web/src/style.css`, `apps/kimi-web/src/components/Sidebar.vue`, and
+chat, file-preview, and diff components. The implementation remains native to
+make/room and adds its own collaborative room, proposal, voting, publishing,
+and forking workflow.
+
+No Kimi Code logos, trademarks, branding assets, bundled product assets, or
+model weights are copied into this project. The Kimi Code name appears here
+only to identify and attribute the upstream open-source work.
 
 MIT License
 

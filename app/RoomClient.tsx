@@ -176,7 +176,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const slug = state?.room.slug ?? initialSlug;
   const [draft, setDraft] = useState("");
   const [activeTab, setActiveTab] = useState<"preview" | "code" | "diff" | "activity">(
-    "preview",
+    "code",
   );
   const [activeSourcePath, setActiveSourcePath] = useState<SourcePath>("index.html");
   const [activeDiffPath, setActiveDiffPath] = useState<SourcePath>("index.html");
@@ -189,6 +189,9 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [newRoomName, setNewRoomName] = useState("");
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const loadSequence = useRef(0);
+  const editorGutter = useRef<HTMLPreElement>(null);
+  const conversationPane = useRef<HTMLElement>(null);
+  const buildPane = useRef<HTMLElement>(null);
 
   const loadRoom = useCallback(
     async (inviteToken?: string | null) => {
@@ -482,6 +485,10 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       (activeSourceDraft.expectedRevision !== state.room.revision ||
         activeSourceDraft.baseBuildId !== visibleBuild?.id),
   );
+  const editorLineNumbers = Array.from(
+    { length: Math.max(1, editorValue.split("\n").length) },
+    (_, index) => index + 1,
+  ).join("\n");
   const diffByPath = useMemo(() => {
     const result = {} as Record<
       SourcePath,
@@ -510,45 +517,16 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
 
   return (
     <main className="product-shell">
-      <header className="topbar">
-        <Link className="wordmark" href="/" aria-label="Make Room home">
-          <span className="wordmark__spark">✳</span>
-          <span>make/room</span>
-        </Link>
-
-        <div className="room-heading">
-          <span className="room-heading__parent">rooms</span>
-          <span className="room-heading__slash">/</span>
-          <strong>{state?.room.name ?? "loading"}</strong>
-          <span className="live-dot" aria-label="Room sync is active" />
-        </div>
-
-        <div className="topbar__actions">
-          <span className={`engine-pill ${state && !state.model.configured ? "engine-pill--blocked" : ""}`}>
-            <span className="engine-pill__dot" />
-            {state?.model.configured ? `${state.model.name} live` : "K3 key needed"}
-          </span>
-          {state?.room.canInvite && (
-            <button className="quiet-button" type="button" onClick={makeInvite} disabled={Boolean(busy)}>
-              {busy === "invite" ? "creating…" : "invite"}
-            </button>
-          )}
-          <button className="quiet-button" type="button" onClick={fork} disabled={!state || Boolean(busy)}>
-            {busy === "fork" ? "forking…" : `fork · ${state?.room.forkCount ?? 0}`}
-          </button>
-          <a
-            className={`avatar avatar--${colorFor(state?.user.id ?? currentUserName)} avatar--you`}
-            href={signOutPath}
-            title={`Sign out ${currentUserName}`}
-            aria-label={`Sign out ${currentUserName}`}
-          >
-            {initials(currentUserName)}
-          </a>
-        </div>
-      </header>
-
       <div className="workspace">
         <aside className="room-rail" aria-label="Your rooms">
+          <div className="rail-brand">
+            <Link className="wordmark" href="/" aria-label="Make Room home">
+              <span className="wordmark__spark">✳</span>
+              <span>make/room</span>
+            </Link>
+            <span className="rail-brand__mode">COLLAB IDE</span>
+          </div>
+
           <div className="rail-section-label">
             <span>your rooms</span>
             <button
@@ -617,18 +595,52 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
           </div>
         </aside>
 
-        <section className="conversation" aria-label="Room conversation">
+        <section ref={conversationPane} className="conversation" aria-label="Room conversation">
           <div className="conversation__header">
-            <div>
-              <p className="section-kicker">ROOM CHAT · SAVED</p>
-              <h1>{state?.room.note ?? "Opening the room…"}</h1>
+            <div className="conversation__context">
+              <div className="conversation__title">
+                <span className="live-dot" aria-label="Room sync is active" />
+                <strong>{state?.room.name ?? "loading room"}</strong>
+              </div>
+              <p>{state?.room.note ?? "Opening the room…"}</p>
             </div>
-            <span className="icon-button" title="Signed-in room">i</span>
+            <div className="conversation__actions">
+              <button
+                className="mobile-pane-switch"
+                type="button"
+                onClick={() =>
+                  buildPane.current?.scrollIntoView({
+                    behavior: "smooth",
+                    block: "nearest",
+                    inline: "start",
+                  })
+                }
+              >
+                workspace →
+              </button>
+              <span className={`engine-pill ${state && !state.model.configured ? "engine-pill--blocked" : ""}`}>
+                <span className="engine-pill__dot" />
+                {state?.model.configured ? state.model.name : "K3 key needed"}
+              </span>
+              {state?.room.canInvite && (
+                <button className="quiet-button" type="button" onClick={makeInvite} disabled={Boolean(busy)}>
+                  {busy === "invite" ? "creating…" : "invite"}
+                </button>
+              )}
+              <a
+                className={`avatar avatar--${colorFor(state?.user.id ?? currentUserName)} avatar--you`}
+                href={signOutPath}
+                title={`Sign out ${currentUserName}`}
+                aria-label={`Sign out ${currentUserName}`}
+              >
+                {initials(currentUserName)}
+              </a>
+            </div>
           </div>
 
           <div className="room-note">
-            <span>COLLECTIVE CONTRACT</span>
-            <p>Messages become proposals. Proposals need a majority. Published builds never change silently.</p>
+            <span>ROOM RULES</span>
+            <p>Thread → patch → review → majority ship. Published builds never change silently.</p>
           </div>
 
           {inviteLink && (
@@ -779,23 +791,41 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 ↑
               </button>
             </form>
-            <p className="composer-hint">SIGNED IN AS {currentUserName.toUpperCase()} · ROOM WRITES ARE ATTRIBUTED</p>
+            <p className="composer-hint">↵ SEND · SHIFT ↵ NEW LINE · SIGNED IN AS {currentUserName.toUpperCase()}</p>
           </div>
         </section>
 
-        <aside className="build-panel" aria-label="Generated app">
+        <aside ref={buildPane} className="build-panel" aria-label="Generated app">
           <div className="build-panel__header">
-            <div>
-              <p className="section-kicker">THE WORKING ARTIFACT</p>
+            <div className="build-panel__title">
+              <p className="section-kicker">WORKSPACE · ARTIFACT</p>
               <h2>{visibleBuild?.name ?? "No build yet"}</h2>
             </div>
-            <div className="version-chip">
-              <span className={state?.staged ? "status-dot status-dot--staged" : "status-dot"} />
-              {state?.staged
-                ? `staging v${state.staged.version}`
-                : state?.published
-                  ? `live · v${state.published.version}`
-                  : "waiting"}
+            <div className="build-panel__actions">
+              <button
+                className="mobile-pane-switch"
+                type="button"
+                onClick={() =>
+                  conversationPane.current?.scrollIntoView({
+                    behavior: "smooth",
+                    block: "nearest",
+                    inline: "start",
+                  })
+                }
+              >
+                ← thread
+              </button>
+              <div className="version-chip">
+                <span className={state?.staged ? "status-dot status-dot--staged" : "status-dot"} />
+                {state?.staged
+                  ? `staging v${state.staged.version}`
+                  : state?.published
+                    ? `live · v${state.published.version}`
+                    : "waiting"}
+              </div>
+              <button className="quiet-button" type="button" onClick={fork} disabled={!state || Boolean(busy)}>
+                {busy === "fork" ? "forking…" : `fork · ${state?.room.forkCount ?? 0}`}
+              </button>
             </div>
           </div>
 
@@ -814,7 +844,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 {tabName}
               </button>
             ))}
-            <span className="sandbox-label">scriptless sandbox</span>
+            <span className="sandbox-label"><i /> scriptless sandbox</span>
           </div>
 
           <div
@@ -905,21 +935,31 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
 
                   <label className="source-editor__input">
                     <span>Edit {activeSourcePath}</span>
-                    <textarea
-                      value={editorValue}
-                      onChange={(event) => updateSourceDraft(event.target.value)}
-                      onKeyDown={(event) => {
-                        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-                          event.preventDefault();
-                          void saveSourceProposal();
-                        }
-                      }}
-                      spellCheck={false}
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      maxLength={65_536}
-                      aria-label={`Source for ${activeSourcePath}`}
-                    />
+                    <div className="source-editor__code-area">
+                      <pre ref={editorGutter} className="source-editor__gutter" aria-hidden="true">
+                        {editorLineNumbers}
+                      </pre>
+                      <textarea
+                        value={editorValue}
+                        onChange={(event) => updateSourceDraft(event.target.value)}
+                        onScroll={(event) => {
+                          if (editorGutter.current) {
+                            editorGutter.current.scrollTop = event.currentTarget.scrollTop;
+                          }
+                        }}
+                        onKeyDown={(event) => {
+                          if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+                            event.preventDefault();
+                            void saveSourceProposal();
+                          }
+                        }}
+                        spellCheck={false}
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        maxLength={65_536}
+                        aria-label={`Source for ${activeSourcePath}`}
+                      />
+                    </div>
                   </label>
 
                   <div className="source-editor__footer">
