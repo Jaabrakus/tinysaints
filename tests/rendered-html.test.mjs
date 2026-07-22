@@ -22,6 +22,8 @@ test("requires identity and drives the product from persisted room state", async
   assert.match(roomRoute, /toggleVote/);
   assert.match(roomRoute, /shipBuild/);
   assert.match(roomRoute, /forkRoom/);
+  assert.match(roomRoute, /mergeForkToParent/);
+  assert.match(roomRoute, /action === "merge-parent"/);
   assert.match(roomRoute, /joinRoom/);
   assert.match(roomRoute, /createRoomInvite/);
   assert.match(roomRoute, /editArtifactFile/);
@@ -32,8 +34,11 @@ test("requires identity and drives the product from persisted room state", async
   assert.match(roomService, /publishedAt/);
   assert.match(roomService, /insert\(buildFiles\)/);
   assert.match(roomService, /status: "superseded"/);
+  assert.match(roomService, /mergeForkSourceSnapshots/);
+  assert.match(roomService, /sourceKind: sql<string>`\$\{"fork-merge"\}`/);
   assert.match(client, /buildDiffLines/);
   assert.match(client, /action:\s*"edit-file"/);
+  assert.match(client, /mutateRoom<\{ slug: string \}>\("merge-parent"\)/);
   assert.doesNotMatch(client, /const\s+(messages|rooms|members)\s*=\s*\[/);
 });
 

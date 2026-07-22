@@ -420,6 +420,116 @@ textarea:focus-visible {
   font: 10px var(--font-code);
 }
 
+.branch-map {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin: 8px 2px 0;
+  padding: 9px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #141512;
+}
+
+.branch-map__current,
+.branch-map__children {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.branch-map__current > span,
+.branch-map__children > span {
+  color: var(--violet);
+  font: 650 8px var(--font-code);
+  letter-spacing: 0.07em;
+}
+
+.branch-map__current > strong {
+  overflow: hidden;
+  color: #d2d4cc;
+  font-size: 11px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-map__current > a {
+  overflow: hidden;
+  color: var(--muted);
+  font: 9px var(--font-code);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-map__current > a:hover {
+  color: var(--text);
+}
+
+.branch-map__current > button {
+  min-height: 28px;
+  border: 1px solid rgb(157 140 255 / 0.34);
+  border-radius: 6px;
+  background: rgb(157 140 255 / 0.08);
+  color: #c2b9ff;
+  font: 580 9px var(--font-code);
+}
+
+.branch-map__current > button:hover:not(:disabled) {
+  background: var(--violet);
+  color: #151416;
+}
+
+.branch-map__children {
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+
+.branch-map__children > a,
+.branch-map__children > div {
+  display: grid;
+  min-width: 0;
+  min-height: 27px;
+  grid-template-columns: 7px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0 5px;
+  border-radius: 5px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.branch-map__children > div {
+  opacity: 0.62;
+}
+
+.branch-map__children > a:hover {
+  background: var(--ink-hover);
+  color: var(--text);
+}
+
+.branch-map__children i {
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--violet);
+  border-radius: 50%;
+}
+
+.branch-map__children strong {
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 520;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-map__children small {
+  color: var(--faint);
+  font: 8px var(--font-code);
+}
+
 .rail-callout {
   display: grid;
   gap: 5px;
@@ -1808,7 +1918,13 @@ textarea:focus-visible {
   font-size: 7px;
 }
 
-.build-footer > button {
+.build-footer__actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.build-footer__actions > button {
   min-height: 28px;
   flex: 0 0 auto;
   padding: 0 9px;
@@ -1819,7 +1935,7 @@ textarea:focus-visible {
   font: 8px var(--font-code);
 }
 
-.build-footer > button:hover:not(:disabled) {
+.build-footer__actions > button:hover:not(:disabled) {
   background: var(--ink-hover);
   color: var(--text);
 }
@@ -1920,7 +2036,8 @@ textarea:focus-visible {
   }
 
   .room-list::before,
-  .rail-callout {
+  .rail-callout,
+  .branch-map {
     display: none;
   }
 

@@ -8,6 +8,7 @@ import {
   getHomeRoomState,
   getRoomState,
   joinRoom,
+  mergeForkToParent,
   RoomError,
   shipBuild,
   toggleVote,
@@ -106,6 +107,12 @@ export async function POST(request: Request) {
     }
     if (action === "fork") {
       return Response.json({ slug: await forkRoom(slug, identity) }, { status: 201 });
+    }
+    if (action === "merge-parent") {
+      return Response.json(
+        { slug: await mergeForkToParent(slug, identity) },
+        { status: 201 },
+      );
     }
     if (action === "create") {
       return Response.json(

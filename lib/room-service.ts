@@ -18,6 +18,7 @@ import {
   type ArtifactSourceFile,
   type ArtifactSourcePath,
 } from "./starter-artifact";
+import { mergeForkSourceSnapshots } from "./fork-merge";
 
 export class RoomError extends Error {
   constructor(
@@ -570,8 +571,16 @@ export async function getRoomState(slugValue: string, identity: Identity) {
   const room = await getRoomForUser(slugValue, identity);
   const db = getDb();
 
-  const [messageRows, memberRows, historyBuildRows, activeBuildRows, roomRows, forkCountRows] =
-    await Promise.all([
+  const [
+    messageRows,
+    memberRows,
+    historyBuildRows,
+    activeBuildRows,
+    roomRows,
+    forkCountRows,
+    parentRoomRows,
+    branchRoomRows,
+  ] = await Promise.all([
       db
         .select({
           id: messages.id,
@@ -628,6 +637,40 @@ export async function getRoomState(slugValue: string, identity: Identity) {
         .select({ count: sql<number>`count(*)` })
         .from(rooms)
         .where(eq(rooms.parentRoomId, room.id)),
+      db
+        .select({
+          slug: rooms.slug,
+          name: rooms.name,
+          updatedAt: rooms.updatedAt,
+        })
+        .from(roomMembers)
+        .innerJoin(rooms, eq(roomMembers.roomId, rooms.id))
+        .where(
+          and(
+            eq(roomMembers.userId, identity.id),
+            eq(rooms.id, room.parentRoomId ?? ""),
+          ),
+        )
+        .limit(1),
+      db
+        .select({
+          slug: rooms.slug,
+          name: rooms.name,
+          updatedAt: rooms.updatedAt,
+          ownerName: users.displayName,
+          role: roomMembers.role,
+        })
+        .from(rooms)
+        .innerJoin(users, eq(rooms.ownerId, users.id))
+        .leftJoin(
+          roomMembers,
+          and(
+            eq(roomMembers.roomId, rooms.id),
+            eq(roomMembers.userId, identity.id),
+          ),
+        )
+        .where(eq(rooms.parentRoomId, room.id))
+        .orderBy(desc(rooms.updatedAt)),
     ]);
 
   const published = activeBuildRows.find((build) => build.status === "published");
@@ -663,11 +706,13 @@ export async function getRoomState(slugValue: string, identity: Identity) {
       note: room.note,
       revision: room.revision,
       parentRoomId: room.parentRoomId,
+      parentRoom: parentRoomRows[0] ?? null,
       forkCount: Number(forkCountRows[0]?.count ?? 0),
       canInvite: room.ownerId === identity.id,
     },
     user: identity,
     rooms: roomRows,
+    branches: branchRoomRows,
     messages: messageRows.reverse(),
     members: memberRows.map((member) => ({
       ...member,
@@ -1229,6 +1274,259 @@ export async function forkRoom(slugValue: string, identity: Identity) {
     db.insert(buildFiles).values(forkFileRows),
   ]);
   return slug;
+}
+
+export async function mergeForkToParent(
+  slugValue: string,
+  identity: Identity,
+) {
+  const branchRoom = await getRoomForUser(slugValue, identity);
+  if (!branchRoom.parentRoomId) {
+    throw new RoomError("This room is not a fork, so it has no parent to merge into.", 409);
+  }
+
+  const db = getDb();
+  const [parentLookup] = await db
+    .select({ slug: rooms.slug })
+    .from(rooms)
+    .where(eq(rooms.id, branchRoom.parentRoomId))
+    .limit(1);
+  if (!parentLookup) throw new RoomError("The parent room no longer exists.", 409);
+
+  // A fork can only converge into a parent that the contributor can still open.
+  const parentRoom = await getRoomForUser(parentLookup.slug, identity);
+  const [
+    branchPublishedRows,
+    branchStagedRows,
+    branchRootRows,
+    parentPublishedRows,
+    parentStagedRows,
+    maxVersionRows,
+  ] = await Promise.all([
+    db
+      .select()
+      .from(builds)
+      .where(and(eq(builds.roomId, branchRoom.id), eq(builds.status, "published")))
+      .orderBy(desc(builds.version))
+      .limit(1),
+    db
+      .select({ id: builds.id })
+      .from(builds)
+      .where(and(eq(builds.roomId, branchRoom.id), eq(builds.status, "staged")))
+      .limit(1),
+    db
+      .select()
+      .from(builds)
+      .where(and(eq(builds.roomId, branchRoom.id), eq(builds.version, 1)))
+      .limit(1),
+    db
+      .select()
+      .from(builds)
+      .where(and(eq(builds.roomId, parentRoom.id), eq(builds.status, "published")))
+      .orderBy(desc(builds.version))
+      .limit(1),
+    db
+      .select()
+      .from(builds)
+      .where(and(eq(builds.roomId, parentRoom.id), eq(builds.status, "staged")))
+      .orderBy(desc(builds.createdAt))
+      .limit(1),
+    db
+      .select({ value: sql<number>`max(${builds.version})` })
+      .from(builds)
+      .where(eq(builds.roomId, parentRoom.id)),
+  ]);
+
+  if (branchStagedRows[0]) {
+    throw new RoomError(
+      "Ship the fork's current proposal before combining it back into the parent.",
+      409,
+    );
+  }
+
+  const branchPublished = branchPublishedRows[0];
+  const branchRoot = branchRootRows[0];
+  const parentPublished = parentPublishedRows[0];
+  const parentStaged = parentStagedRows[0];
+  const parentWorking = parentStaged ?? parentPublished;
+  if (!branchPublished || !branchRoot || !parentPublished || !parentWorking) {
+    throw new RoomError("Both rooms need a published source snapshot before they can combine.", 409);
+  }
+  if (branchRoot.sourceKind !== "fork" || !branchRoot.parentBuildId) {
+    throw new RoomError("This fork is missing its branch-point snapshot.", 409);
+  }
+
+  const [ancestor] = await db
+    .select()
+    .from(builds)
+    .where(
+      and(
+        eq(builds.id, branchRoot.parentBuildId),
+        eq(builds.roomId, parentRoom.id),
+      ),
+    )
+    .limit(1);
+  if (!ancestor) throw new RoomError("The fork's branch point is no longer available.", 409);
+
+  const [ancestorFiles, parentFiles, branchFiles] = await Promise.all([
+    ensureBuildFiles(ancestor).then(asArtifactSourceFiles),
+    ensureBuildFiles(parentWorking).then(asArtifactSourceFiles),
+    ensureBuildFiles(branchPublished).then(asArtifactSourceFiles),
+  ]);
+  const merge = mergeForkSourceSnapshots(ancestorFiles, parentFiles, branchFiles);
+  if (merge.branchChangedPaths.length === 0) {
+    throw new RoomError("This fork has no published source changes to combine yet.", 409);
+  }
+  if (merge.conflicts.length > 0) {
+    throw new RoomError(
+      `The parent and fork both changed ${merge.conflicts.join(
+        " and ",
+      )}. The fork is still safe; reconcile that file before combining.`,
+      409,
+    );
+  }
+  if (merge.mergedPaths.length === 0) {
+    throw new RoomError("The parent already contains this fork's published changes.", 409);
+  }
+
+  let html: string;
+  try {
+    html = assembleArtifactFiles(merge.files, parentWorking.name);
+  } catch (error) {
+    throw new RoomError(
+      error instanceof Error ? error.message : "The combined source failed safety validation.",
+    );
+  }
+
+  const buildId = crypto.randomUUID();
+  const nextVersion = Number(maxVersionRows[0]?.value ?? 0) + 1;
+  if (nextVersion > MAX_BUILDS_PER_ROOM) {
+    throw new RoomError(
+      "The parent room reached the founder source-history limit. Ship or fork again before combining more work.",
+      409,
+    );
+  }
+  const fileRows = await sourceRows(buildId, merge.files);
+  const parentIsCurrent = sql`EXISTS (
+    SELECT 1 FROM rooms
+    WHERE id = ${parentRoom.id} AND revision = ${parentRoom.revision}
+  )`;
+  const branchIsCurrent = sql`EXISTS (
+      SELECT 1 FROM rooms AS branch_room
+      WHERE branch_room.id = ${branchRoom.id}
+        AND branch_room.revision = ${branchRoom.revision}
+    ) AND EXISTS (
+      SELECT 1 FROM builds AS branch_build
+      WHERE branch_build.id = ${branchPublished.id}
+        AND branch_build.room_id = ${branchRoom.id}
+        AND branch_build.status = 'published'
+    ) AND NOT EXISTS (
+      SELECT 1 FROM builds AS branch_stage
+      WHERE branch_stage.room_id = ${branchRoom.id}
+        AND branch_stage.status = 'staged'
+    )`;
+  const mergedPathLabel = merge.mergedPaths.join(" and ");
+  const stagedBuild = db
+    .select({
+      id: sql<string>`${buildId}`.as("id"),
+      roomId: sql<string>`${parentRoom.id}`.as("room_id"),
+      version: sql<number>`${nextVersion}`.as("version"),
+      status: sql<string>`${"staged"}`.as("status"),
+      sourceKind: sql<string>`${"fork-merge"}`.as("source_kind"),
+      name: sql<string>`${parentWorking.name}`.as("name"),
+      proposalTitle: sql<string>`${`Merge ${branchRoom.name}`}`.as("proposal_title"),
+      rationale: sql<string>`${`${identity.displayName} proposed the fork's published work back into ${parentRoom.name}.`}`.as("rationale"),
+      summary: sql<string>`${`Combined ${mergedPathLabel} from fork v${branchPublished.version}.`}`.as("summary"),
+      changesJson: sql<string>`${JSON.stringify([
+        ...merge.mergedPaths.map((path) => `Merged ${path} from ${branchRoom.name}`),
+        "Preserved non-overlapping work already in the parent",
+        "Created one reviewable convergence snapshot",
+      ])}`.as("changes_json"),
+      sourceMessageIdsJson: sql<string>`${parentWorking.sourceMessageIdsJson}`.as(
+        "source_message_ids_json",
+      ),
+      html: sql<string>`${html}`.as("html"),
+      createdBy: sql<string>`${identity.id}`.as("created_by"),
+      parentBuildId: sql<string>`${parentWorking.id}`.as("parent_build_id"),
+      createdAt: sql<string>`CURRENT_TIMESTAMP`.as("created_at"),
+      publishedAt: sql<string | null>`${null}`.as("published_at"),
+    })
+    .from(rooms)
+    .where(
+      and(
+        eq(rooms.id, parentRoom.id),
+        eq(rooms.revision, parentRoom.revision),
+        branchIsCurrent,
+      ),
+    )
+    .limit(1);
+  const stagedFileRows = fileRows.map((file) =>
+    db
+      .select({
+        buildId: sql<string>`${buildId}`.as("build_id"),
+        path: sql<string>`${file.path}`.as("path"),
+        content: sql<string>`${file.content}`.as("content"),
+        language: sql<string>`${file.language}`.as("language"),
+        sha256: sql<string>`${file.sha256}`.as("sha256"),
+        byteCount: sql<number>`${file.byteCount}`.as("byte_count"),
+        createdAt: sql<string>`CURRENT_TIMESTAMP`.as("created_at"),
+      })
+      .from(builds)
+      .where(eq(builds.id, buildId))
+      .limit(1),
+  );
+
+  await db.batch([
+    db
+      .update(builds)
+      .set({ status: "superseded" })
+      .where(
+        and(
+          eq(builds.roomId, parentRoom.id),
+          eq(builds.status, "staged"),
+          parentStaged ? eq(builds.id, parentStaged.id) : sql`0`,
+          parentIsCurrent,
+          branchIsCurrent,
+        ),
+      ),
+    db.insert(builds).select(stagedBuild),
+    ...stagedFileRows.map((row) => db.insert(buildFiles).select(row)),
+    db
+      .update(rooms)
+      .set({
+        updatedAt: nowSql(),
+        revision: sql`${rooms.revision} + 1`,
+      })
+      .where(
+        and(
+          eq(rooms.id, parentRoom.id),
+          eq(rooms.revision, parentRoom.revision),
+          sql`EXISTS (
+            SELECT 1 FROM builds
+            WHERE id = ${buildId} AND room_id = ${parentRoom.id} AND status = 'staged'
+          )`,
+        ),
+      ),
+  ]);
+
+  const [saved] = await db
+    .select({
+      id: builds.id,
+      files: sql<number>`(
+        SELECT count(*) FROM build_files WHERE build_id = ${buildId}
+      )`,
+    })
+    .from(builds)
+    .where(and(eq(builds.id, buildId), eq(builds.status, "staged")))
+    .limit(1);
+  if (!saved || Number(saved.files) !== 2) {
+    throw new RoomError(
+      "The parent changed while this fork was combining. Nothing was lost; try the merge again.",
+      409,
+    );
+  }
+
+  return parentRoom.slug;
 }
 
 export async function getGenerationContext(

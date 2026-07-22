@@ -42,12 +42,20 @@ type RoomState = {
     name: string;
     note: string;
     parentRoomId: string | null;
+    parentRoom: { slug: string; name: string; updatedAt: string } | null;
     forkCount: number;
     canInvite: boolean;
     revision: number;
   };
   user: { id: string; displayName: string };
   rooms: Array<{ slug: string; name: string; updatedAt: string; role: string }>;
+  branches: Array<{
+    slug: string;
+    name: string;
+    updatedAt: string;
+    ownerName: string;
+    role: string | null;
+  }>;
   messages: Array<{
     id: string;
     body: string;
@@ -329,7 +337,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   }
 
   async function fork() {
-    if (!state || busy) return;
+    if (!state || state.staged || busy) return;
     setBusy("fork");
     setError(null);
     try {
@@ -337,6 +345,25 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       window.location.assign(`/?room=${encodeURIComponent(result.slug)}`);
     } catch (forkError) {
       setError(forkError instanceof Error ? forkError.message : "The room could not fork.");
+      setBusy(null);
+    }
+  }
+
+  async function mergeToParent() {
+    if (!state?.room.parentRoom || state.staged || busy) return;
+    setBusy("merge-parent");
+    setError(null);
+    setNotice("Comparing this fork with the latest parent workspace…");
+    try {
+      const result = await mutateRoom<{ slug: string }>("merge-parent");
+      window.location.assign(`/?room=${encodeURIComponent(result.slug)}`);
+    } catch (mergeError) {
+      setError(
+        mergeError instanceof Error
+          ? mergeError.message
+          : "This fork could not combine into its parent.",
+      );
+      setNotice("The fork is unchanged · resolve the conflict or try again");
       setBusy(null);
     }
   }
@@ -571,6 +598,52 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               </Link>
             ))}
           </nav>
+
+          {state && (state.room.parentRoom || state.branches.length > 0) && (
+            <section className="branch-map" aria-label="Fork lineage">
+              {state.room.parentRoom && (
+                <div className="branch-map__current">
+                  <span>WORKING BRANCH</span>
+                  <strong>{state.room.name}</strong>
+                  <Link href={`/?room=${encodeURIComponent(state.room.parentRoom.slug)}`}>
+                    ↖ parent · {state.room.parentRoom.name}
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={mergeToParent}
+                    disabled={Boolean(busy) || !state.published || Boolean(state.staged)}
+                    title={state.staged ? "Ship the fork proposal before merging it" : undefined}
+                  >
+                    {busy === "merge-parent" ? "combining…" : "propose merge ↗"}
+                  </button>
+                </div>
+              )}
+              {state.branches.length > 0 && (
+                <div className="branch-map__children">
+                  <span>TEAM FORKS</span>
+                  {state.branches.slice(0, 4).map((branch) =>
+                    branch.role ? (
+                      <Link
+                        href={`/?room=${encodeURIComponent(branch.slug)}`}
+                        title={branch.name}
+                        key={branch.slug}
+                      >
+                        <i />
+                        <strong>{branch.ownerName}&apos;s fork</strong>
+                        <small>open →</small>
+                      </Link>
+                    ) : (
+                      <div className="branch-map__private" title={branch.name} key={branch.slug}>
+                        <i />
+                        <strong>{branch.ownerName}&apos;s fork</strong>
+                        <small>working</small>
+                      </div>
+                    ),
+                  )}
+                </div>
+              )}
+            </section>
+          )}
 
           <div className="rail-callout">
             <span className="rail-callout__eyebrow">ROOM RECORD</span>
@@ -823,7 +896,13 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                     ? `live · v${state.published.version}`
                     : "waiting"}
               </div>
-              <button className="quiet-button" type="button" onClick={fork} disabled={!state || Boolean(busy)}>
+              <button
+                className="quiet-button"
+                type="button"
+                onClick={fork}
+                disabled={!state || Boolean(busy) || Boolean(state?.staged)}
+                title={state?.staged ? "Ship the staged proposal before branching again" : undefined}
+              >
                 {busy === "fork" ? "forking…" : `fork · ${state?.room.forkCount ?? 0}`}
               </button>
             </div>
@@ -856,7 +935,9 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 <span>
                   {state.staged.sourceKind === "manual"
                     ? "room source edit"
-                    : `${state.staged.sourceMessageIds.length} source messages`}
+                    : state.staged.sourceKind === "fork-merge"
+                      ? "converged fork snapshot"
+                      : `${state.staged.sourceMessageIds.length} source messages`}
                 </span>
               </div>
             )}
@@ -1077,9 +1158,9 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               <p>
                 <strong>
                   {state?.staged
-                    ? `Reviewing an unshipped ${
-                        state.staged.sourceKind === "manual" ? "room edit" : "Kimi patch"
-                      }`
+                    ? `Reviewing an unshipped ${proposalSourceLabel(
+                        state.staged.sourceKind,
+                      ).toLowerCase()}`
                     : "The published build is immutable"}
                 </strong>
                 <span>
@@ -1089,9 +1170,26 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 </span>
               </p>
             </div>
-            <button type="button" onClick={fork} disabled={!state?.published || Boolean(busy)}>
-              fork this app →
-            </button>
+            <div className="build-footer__actions">
+              {state?.room.parentRoom && (
+                <button
+                  type="button"
+                  onClick={mergeToParent}
+                  disabled={!state.published || Boolean(busy) || Boolean(state.staged)}
+                  title={state.staged ? "Ship the fork proposal before merging it" : undefined}
+                >
+                  {busy === "merge-parent" ? "combining…" : "merge parent ↗"}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={fork}
+                disabled={!state?.published || Boolean(busy) || Boolean(state?.staged)}
+                title={state?.staged ? "Ship the staged proposal before branching again" : undefined}
+              >
+                {state?.room.parentRoom ? "fork again →" : "fork this app →"}
+              </button>
+            </div>
           </footer>
         </aside>
       </div>

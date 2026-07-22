@@ -12,7 +12,8 @@ make/room is a working founder MVP for collective software creation. Signed-in p
 - a two-file collaborative editor for `index.html` and `styles.css`, with optimistic conflict protection
 - immutable source snapshots and a line-by-line review diff on every manual or Kimi proposal
 - an explicit staged-to-published approval flow with majority voting
-- immutable published versions and independent fork histories
+- immutable published versions, independent fork histories, and fork-to-parent merge proposals
+- safe three-way convergence: different files combine automatically while overlapping file edits stop as conflicts
 - generated scriptless single-page apps running in an opaque, network-blocked sandboxed iframe
 - one in-flight synthesis per room plus per-user cooldown and daily founder limits
 - honest failure states when Kimi is unavailable or not configured—there is no demo fallback
@@ -58,7 +59,7 @@ The direct HTTP integration is deliberate for this edge deployment; the Agent SD
 
 This project adapts the bounded line-diff primitive and the chat-first pane hierarchy from the MIT-licensed [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code) repository. It keeps make/room's own visual identity and does not copy Kimi branding or transplant the local daemon, terminal, filesystem, or process runner into the edge worker. Those capabilities require a separately isolated runtime.
 
-The collaborative spin is native to make/room: source edits become immutable room proposals, every proposal has a reviewable diff, active votes attach to that exact snapshot, shipping is guarded by majority backing, and forks copy only the published source tree. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the pinned upstream commit and full MIT notice.
+The collaborative spin is native to make/room: source edits become immutable room proposals, every proposal has a reviewable diff, active votes attach to that exact snapshot, shipping is guarded by majority backing, and forks copy only the published source tree. A contributor can publish work in a fork and propose it back to the immediate parent; non-overlapping file changes converge into one staged snapshot, while overlapping file edits leave both rooms untouched until a person resolves the conflict. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the pinned upstream commit and full MIT notice.
 
 ## Commands
 
