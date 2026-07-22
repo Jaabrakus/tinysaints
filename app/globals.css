@@ -21,7 +21,8 @@
   --sky: #7dd8f7;
   --font-ui: var(--font-geist-sans), Arial, sans-serif;
   --font-code: var(--font-geist-mono), "SFMono-Regular", Consolas, monospace;
-  --rail-w: 246px;
+  --rail-w: 208px;
+  --collab-w: 390px;
 }
 
 * {
@@ -213,10 +214,11 @@ textarea:focus-visible {
   min-width: 0;
   min-height: 0;
   flex: 1;
+  grid-template-areas: "rooms editor collaboration";
   grid-template-columns:
     var(--rail-w)
-    minmax(420px, 1fr)
-    minmax(440px, 500px);
+    minmax(560px, 1fr)
+    minmax(340px, var(--collab-w));
   overflow: hidden;
 }
 
@@ -229,6 +231,7 @@ textarea:focus-visible {
 
 /* Workspace/session rail */
 .room-rail {
+  grid-area: rooms;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -656,11 +659,12 @@ textarea:focus-visible {
 
 /* Conversation / agent thread */
 .conversation {
+  grid-area: collaboration;
   position: relative;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-right: 1px solid var(--line);
+  border-left: 1px solid var(--line);
   background: #0f100e;
 }
 
@@ -675,6 +679,20 @@ textarea:focus-visible {
   padding: 0 14px;
   border-bottom: 1px solid var(--line);
   background: var(--ink);
+}
+
+.conversation__header {
+  min-height: 52px;
+  flex-basis: 52px;
+  padding: 0 12px;
+}
+
+.conversation__header::before {
+  flex: 0 0 auto;
+  color: var(--lime);
+  content: "AI";
+  font: 650 8px var(--font-code);
+  letter-spacing: 0.08em;
 }
 
 .conversation__header > div,
@@ -716,6 +734,20 @@ textarea:focus-visible {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.conversation .room-note {
+  min-height: 37px;
+  padding: 0 12px;
+}
+
+.conversation .room-note span {
+  display: none;
+}
+
+.conversation .room-note p {
+  font: 9px/1.4 var(--font-code);
+  white-space: normal;
 }
 
 .conversation__actions,
@@ -851,7 +883,7 @@ textarea:focus-visible {
   flex: 1;
   flex-direction: column;
   overflow-y: auto;
-  padding: 15px 12px 22px;
+  padding: 10px 10px 18px;
   scrollbar-gutter: stable;
 }
 
@@ -859,9 +891,9 @@ textarea:focus-visible {
   display: grid;
   width: min(100%, 720px);
   grid-template-columns: 27px minmax(0, 1fr);
-  gap: 10px;
+  gap: 8px;
   margin: 0 auto;
-  padding: 10px 8px;
+  padding: 10px 4px;
   border-bottom: 1px solid rgb(43 45 40 / 0.56);
 }
 
@@ -893,8 +925,8 @@ textarea:focus-visible {
 .message__body > p {
   margin: 4px 0 0;
   color: #bfc1b9;
-  font-size: 14px;
-  line-height: 1.58;
+  font-size: 12px;
+  line-height: 1.55;
   white-space: pre-wrap;
 }
 
@@ -1029,7 +1061,7 @@ textarea:focus-visible {
   display: grid;
   flex: 0 0 auto;
   gap: 6px;
-  padding: 10px 18px 14px;
+  padding: 9px 10px 11px;
   border-top: 0;
   background: linear-gradient(180deg, transparent, #0f100e 12px);
 }
@@ -1084,7 +1116,7 @@ textarea:focus-visible {
 
 .composer {
   display: grid;
-  min-height: 70px;
+  min-height: 82px;
   grid-template-columns: minmax(0, 1fr) 31px;
   gap: 8px;
   padding: 8px;
@@ -1109,13 +1141,13 @@ textarea:focus-visible {
 
 .composer textarea {
   min-width: 0;
-  min-height: 48px;
+  min-height: 60px;
   resize: none;
   border: 0;
   outline: 0;
   background: transparent;
   color: #d7d9d1;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -1144,6 +1176,7 @@ textarea:focus-visible {
 
 /* Code / preview workspace */
 .build-panel {
+  grid-area: editor;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1151,6 +1184,8 @@ textarea:focus-visible {
 }
 
 .build-panel__header {
+  min-height: 52px;
+  flex-basis: 52px;
   background: #10110f;
 }
 
@@ -1365,8 +1400,8 @@ textarea:focus-visible {
 
 .build-tabs {
   display: flex;
-  min-height: 35px;
-  flex: 0 0 35px;
+  min-height: 38px;
+  flex: 0 0 38px;
   align-items: stretch;
   gap: 0;
   padding: 0 8px;
@@ -1479,7 +1514,7 @@ textarea:focus-visible {
   min-width: 0;
   min-height: 0;
   flex: 1;
-  grid-template-columns: 148px minmax(0, 1fr);
+  grid-template-columns: 210px minmax(0, 1fr);
   overflow: hidden;
   background: #121310;
 }
@@ -1496,8 +1531,8 @@ textarea:focus-visible {
 
 .source-files__heading {
   display: flex;
-  min-height: 35px;
-  flex: 0 0 35px;
+  min-height: 38px;
+  flex: 0 0 38px;
   align-items: center;
   justify-content: space-between;
   padding: 0 10px;
@@ -1663,8 +1698,8 @@ textarea:focus-visible {
 
 .source-editor__toolbar {
   display: flex;
-  min-height: 35px;
-  flex: 0 0 35px;
+  min-height: 38px;
+  flex: 0 0 38px;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -2333,8 +2368,10 @@ textarea:focus-visible {
 
 .build-footer {
   display: flex;
-  min-height: 48px;
-  flex: 0 0 48px;
+  min-height: 32px;
+  flex: 0 0 32px;
+  padding-top: 3px;
+  padding-bottom: 3px;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -2407,14 +2444,16 @@ textarea:focus-visible {
 
 @media (max-width: 1240px) {
   :root {
-    --rail-w: 216px;
+    --rail-w: 190px;
+    --collab-w: 350px;
   }
 
   .workspace {
+    grid-template-areas: "rooms editor collaboration";
     grid-template-columns:
       var(--rail-w)
-      minmax(370px, 1fr)
-      minmax(420px, 470px);
+      minmax(480px, 1fr)
+      minmax(320px, var(--collab-w));
   }
 
   .section-kicker {
@@ -2422,7 +2461,7 @@ textarea:focus-visible {
   }
 
   .source-workspace {
-    grid-template-columns: 126px minmax(0, 1fr);
+    grid-template-columns: 178px minmax(0, 1fr);
   }
 
   .proposal-card ul {
@@ -2453,6 +2492,9 @@ textarea:focus-visible {
   .workspace {
     display: grid;
     flex: none;
+    grid-template-areas:
+      "rooms rooms"
+      "collaboration editor";
     grid-template-columns: minmax(330px, 0.9fr) minmax(440px, 1.1fr);
     grid-template-rows: 52px minmax(650px, calc(100dvh - 52px));
     overflow: visible;
@@ -2538,6 +2580,11 @@ textarea:focus-visible {
   .build-panel {
     height: calc(100dvh - 52px);
   }
+
+  .conversation {
+    border-left: 0;
+    border-right: 1px solid var(--line);
+  }
 }
 
 @media (max-width: 760px) {
@@ -2591,6 +2638,10 @@ textarea:focus-visible {
     border-bottom: 0;
     scroll-snap-align: start;
     scroll-snap-stop: always;
+  }
+
+  .conversation {
+    border-right: 0;
   }
 
   .mobile-pane-switch {
