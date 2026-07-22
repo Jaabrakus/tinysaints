@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  check,
   index,
   integer,
   primaryKey,
@@ -89,6 +90,7 @@ export const builds = sqliteTable(
       .references(() => rooms.id, { onDelete: "cascade" }),
     version: integer("version").notNull(),
     status: text("status").notNull(),
+    sourceKind: text("source_kind").notNull().default("legacy"),
     name: text("name").notNull(),
     proposalTitle: text("proposal_title").notNull(),
     rationale: text("rationale").notNull(),
@@ -106,6 +108,40 @@ export const builds = sqliteTable(
   (table) => [
     uniqueIndex("builds_room_version_unique").on(table.roomId, table.version),
     index("builds_room_status_idx").on(table.roomId, table.status),
+  ],
+);
+
+export const buildFiles = sqliteTable(
+  "build_files",
+  {
+    buildId: text("build_id")
+      .notNull()
+      .references(() => builds.id, { onDelete: "cascade" }),
+    path: text("path").notNull(),
+    content: text("content").notNull(),
+    language: text("language").notNull(),
+    sha256: text("sha256").notNull(),
+    byteCount: integer("byte_count").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.buildId, table.path] }),
+    check(
+      "build_files_path_check",
+      sql`${table.path} IN ('index.html', 'styles.css')`,
+    ),
+    check(
+      "build_files_language_check",
+      sql`(${table.path} = 'index.html' AND ${table.language} = 'html') OR (${table.path} = 'styles.css' AND ${table.language} = 'css')`,
+    ),
+    check(
+      "build_files_byte_count_check",
+      sql`${table.byteCount} >= 0 AND ${table.byteCount} <= 65536`,
+    ),
+    check(
+      "build_files_sha256_check",
+      sql`length(${table.sha256}) = 64 AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
   ],
 );
 

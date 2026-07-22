@@ -45,10 +45,10 @@ export async function POST(request: Request) {
         note: context.room.note,
       },
       messages: context.messages,
-      published: {
-        name: context.published.name,
-        version: context.published.version,
-        html: context.published.html,
+      current: {
+        name: context.working.name,
+        version: context.working.version,
+        files: context.workingFiles,
       },
     });
     await stageGeneratedArtifact(slug, identity, artifact, {

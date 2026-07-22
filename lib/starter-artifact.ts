@@ -86,6 +86,69 @@ export type GeneratedSource = {
   css: string;
 };
 
+export const artifactSourcePaths = ["index.html", "styles.css"] as const;
+
+export type ArtifactSourcePath = (typeof artifactSourcePaths)[number];
+
+export type ArtifactSourceFile = {
+  path: ArtifactSourcePath;
+  content: string;
+  language: "html" | "css";
+};
+
+export function extractArtifactSource(input: string): GeneratedSource {
+  const body = input.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)?.[1];
+  if (body === undefined) {
+    throw new Error("The stored artifact could not be opened as source files.");
+  }
+
+  const styles: string[] = [];
+  for (const match of input.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)) {
+    styles.push(match[1] ?? "");
+  }
+
+  return { html: body.trim(), css: styles.join("\n").trim() };
+}
+
+export function sourceFilesFromGenerated(
+  source: GeneratedSource,
+): ArtifactSourceFile[] {
+  return [
+    { path: "index.html", content: source.html.trim(), language: "html" },
+    { path: "styles.css", content: source.css.trim(), language: "css" },
+  ];
+}
+
+export function generatedSourceFromFiles(
+  files: ReadonlyArray<Pick<ArtifactSourceFile, "path" | "content">>,
+): GeneratedSource {
+  if (files.length !== artifactSourcePaths.length) {
+    throw new Error("An artifact must contain index.html and styles.css.");
+  }
+
+  const byPath = new Map<ArtifactSourcePath, string>();
+  for (const file of files) {
+    if (!artifactSourcePaths.includes(file.path)) {
+      throw new Error("That source path is not part of this artifact.");
+    }
+    if (byPath.has(file.path)) {
+      throw new Error("An artifact cannot contain duplicate source paths.");
+    }
+    byPath.set(file.path, file.content);
+  }
+
+  const html = byPath.get("index.html");
+  const css = byPath.get("styles.css");
+  if (html === undefined || css === undefined) {
+    throw new Error("An artifact must contain index.html and styles.css.");
+  }
+  return { html, css };
+}
+
+export function makeStarterSource(roomName: string) {
+  return extractArtifactSource(makeStarterArtifact(roomName));
+}
+
 function byteLength(value: string) {
   return new TextEncoder().encode(value).byteLength;
 }
@@ -118,4 +181,11 @@ export function assembleGeneratedArtifact(source: GeneratedSource, title: string
   const safeCss = css.replace(/<\/style/gi, "<\\/style");
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><title>${safeTitle}</title>${securityMeta}<style>${safeCss}</style></head><body>${html}</body></html>`;
+}
+
+export function assembleArtifactFiles(
+  files: ReadonlyArray<Pick<ArtifactSourceFile, "path" | "content">>,
+  title: string,
+) {
+  return assembleGeneratedArtifact(generatedSourceFromFiles(files), title);
 }

@@ -51,6 +51,7 @@ const schemaStatements = [
     room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
     version INTEGER NOT NULL,
     status TEXT NOT NULL,
+    source_kind TEXT NOT NULL DEFAULT 'legacy',
     name TEXT NOT NULL,
     proposal_title TEXT NOT NULL,
     rationale TEXT NOT NULL,
@@ -65,6 +66,21 @@ const schemaStatements = [
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS builds_room_version_unique ON builds(room_id, version)`,
   `CREATE INDEX IF NOT EXISTS builds_room_status_idx ON builds(room_id, status)`,
+  `CREATE TABLE IF NOT EXISTS build_files (
+    build_id TEXT NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
+    path TEXT NOT NULL CHECK(path IN ('index.html', 'styles.css')),
+    content TEXT NOT NULL,
+    language TEXT NOT NULL CHECK(
+      (path = 'index.html' AND language = 'html') OR
+      (path = 'styles.css' AND language = 'css')
+    ),
+    sha256 TEXT NOT NULL CHECK(
+      length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+    byte_count INTEGER NOT NULL CHECK(byte_count >= 0 AND byte_count <= 65536),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(build_id, path)
+  )`,
   `CREATE TABLE IF NOT EXISTS votes (
     build_id TEXT NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -86,6 +102,10 @@ const userColumns = [
   ["last_generated_at", "ALTER TABLE users ADD COLUMN last_generated_at TEXT"],
   ["generation_window_started_at", "ALTER TABLE users ADD COLUMN generation_window_started_at TEXT"],
   ["generation_count", "ALTER TABLE users ADD COLUMN generation_count INTEGER NOT NULL DEFAULT 0"],
+] as const;
+
+const buildColumns = [
+  ["source_kind", "ALTER TABLE builds ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'legacy'"],
 ] as const;
 
 let initialized = false;
@@ -124,6 +144,18 @@ export async function ensureDatabase() {
   const existingUserColumns = new Set(userColumnInfo.results.map((column) => column.name));
   for (const [name, statement] of userColumns) {
     if (existingUserColumns.has(name)) continue;
+    try {
+      await d1.prepare(statement).run();
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("duplicate column name")) {
+        throw error;
+      }
+    }
+  }
+  const buildColumnInfo = await d1.prepare("PRAGMA table_info(builds)").all<{ name: string }>();
+  const existingBuildColumns = new Set(buildColumnInfo.results.map((column) => column.name));
+  for (const [name, statement] of buildColumns) {
+    if (existingBuildColumns.has(name)) continue;
     try {
       await d1.prepare(statement).run();
     } catch (error) {

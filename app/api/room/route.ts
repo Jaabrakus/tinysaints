@@ -2,6 +2,7 @@ import {
   addMessage,
   createRoomInvite,
   createRoom,
+  editArtifactFile,
   forkRoom,
   getIdentity,
   getHomeRoomState,
@@ -63,6 +64,11 @@ export async function POST(request: Request) {
       body?: string;
       name?: string;
       token?: string;
+      path?: string;
+      content?: string;
+      expectedRevision?: number;
+      baseBuildId?: string;
+      buildId?: string;
     };
     const action = payload.action ?? "";
     const slug = payload.slug ?? "tiny-plans";
@@ -78,8 +84,20 @@ export async function POST(request: Request) {
       await addMessage(slug, identity, payload.body ?? "");
       return Response.json(await getRoomState(slug, identity));
     }
+    if (action === "edit-file") {
+      await editArtifactFile(slug, identity, {
+        path: payload.path ?? "",
+        content: payload.content ?? "",
+        expectedRevision: payload.expectedRevision ?? -1,
+        baseBuildId: payload.baseBuildId ?? "",
+      });
+      return Response.json(await getRoomState(slug, identity));
+    }
     if (action === "vote") {
-      await toggleVote(slug, identity);
+      await toggleVote(slug, identity, {
+        roomRevision: payload.expectedRevision ?? -1,
+        buildId: payload.buildId ?? "",
+      });
       return Response.json(await getRoomState(slug, identity));
     }
     if (action === "ship") {

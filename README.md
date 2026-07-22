@@ -2,13 +2,15 @@
 
 **The group chat that becomes an app.**
 
-make/room is a working founder MVP for collective software creation. Signed-in people talk in a room, ask Kimi K3 to synthesize the shared direction into an app, vote on the staged build, publish it, and fork the result into a new room.
+make/room is a working founder MVP for collective software creation. Signed-in people talk in a room, edit a shared source tree or ask Kimi K3 to synthesize the direction, review the exact diff, vote on the staged build, publish it, and fork the result into a new room.
 
 ## What is real now
 
 - ChatGPT identity at the application boundary
 - durable invite-only rooms, memberships, messages, proposals, votes, versions, and forks in Cloudflare D1
 - server-side Kimi K3 synthesis using the room's canonical message history
+- a two-file collaborative editor for `index.html` and `styles.css`, with optimistic conflict protection
+- immutable source snapshots and a line-by-line review diff on every manual or Kimi proposal
 - an explicit staged-to-published approval flow with majority voting
 - immutable published versions and independent fork histories
 - generated scriptless single-page apps running in an opaque, network-blocked sandboxed iframe
@@ -52,6 +54,12 @@ Official references:
 
 The direct HTTP integration is deliberate for this edge deployment; the Agent SDK expects process capabilities that are not available in a Cloudflare Worker.
 
+## Kimi Code adaptation
+
+This project adapts the bounded line-diff primitive from the MIT-licensed [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code) repository. It does not copy Kimi branding or transplant the local daemon, terminal, filesystem, or process runner into the edge worker. Those capabilities require a separately isolated runtime.
+
+The collaborative spin is native to make/room: source edits become immutable room proposals, every proposal has a reviewable diff, active votes attach to that exact snapshot, shipping is guarded by majority backing, and forks copy only the published source tree. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the pinned upstream commit and full MIT notice.
+
 ## Commands
 
 ```bash
@@ -66,5 +74,6 @@ npm run lint     # source linting
 1. Expiring, scoped invitations plus explicit private/public room controls.
 2. Configurable organization budgets and abuse controls beyond the fixed MVP limits.
 3. A containerized build/test runner for generated projects with dependencies or backends.
-4. Exportable source history and immutable commit attribution.
-5. Public discovery based on useful shipped apps instead of an engagement feed.
+4. Exportable Git repositories and signed commit attribution.
+5. CRDT/live-cursor editing after the optimistic collaboration model proves useful.
+6. Public discovery based on useful shipped apps instead of an engagement feed.

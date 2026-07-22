@@ -28,6 +28,7 @@ export function sites(): Plugin {
       const outputDirectory = resolve(root, "dist", ".openai");
       const hostingConfig = resolve(root, ".openai", "hosting.json");
       const drizzleSource = resolve(root, "drizzle");
+      const thirdPartyNotices = resolve(root, "THIRD_PARTY_NOTICES.md");
 
       await rm(outputDirectory, { recursive: true, force: true });
       await mkdir(outputDirectory, { recursive: true });
@@ -39,6 +40,12 @@ export function sites(): Plugin {
         await cp(drizzleSource, resolve(outputDirectory, "drizzle"), {
           recursive: true,
         });
+      }
+      if (await exists(thirdPartyNotices)) {
+        await cp(
+          thirdPartyNotices,
+          resolve(root, "dist", "THIRD_PARTY_NOTICES.md"),
+        );
       }
     },
   };

@@ -1,9 +1,20 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { buildDiffLines, diffStats } from "../lib/kimi-code-diff";
 
 type Color = "lime" | "violet" | "coral" | "sky" | "cream";
+type SourcePath = "index.html" | "styles.css";
+type RoomActionValue = string | number | boolean | null;
+
+type SourceFile = {
+  path: SourcePath;
+  content: string;
+  language: "html" | "css";
+  sha256: string;
+  byteCount: number;
+};
 
 type Build = {
   id: string;
@@ -16,6 +27,9 @@ type Build = {
   changes: string[];
   sourceMessageIds: string[];
   html: string;
+  sourceKind: string;
+  parentBuildId: string | null;
+  files: SourceFile[];
   createdBy: string;
   createdAt: string;
   publishedAt: string | null;
@@ -30,6 +44,7 @@ type RoomState = {
     parentRoomId: string | null;
     forkCount: number;
     canInvite: boolean;
+    revision: number;
   };
   user: { id: string; displayName: string };
   rooms: Array<{ slug: string; name: string; updatedAt: string; role: string }>;
@@ -66,6 +81,19 @@ type RoomState = {
   model: { configured: boolean; name: string };
 };
 
+type SourceDraft = {
+  content: string;
+  baseContent: string;
+  baseBuildId: string;
+  expectedRevision: number;
+};
+
+type EditorStatus = {
+  kind: "saved" | "conflict";
+  path: SourcePath;
+  message: string;
+} | null;
+
 type Props = {
   initialUser: { displayName: string };
   initialSlug: string;
@@ -73,6 +101,21 @@ type Props = {
 };
 
 const colors: Color[] = ["coral", "violet", "sky", "cream", "lime"];
+const sourcePaths: SourcePath[] = ["index.html", "styles.css"];
+
+function getSourceFile(build: Build | null | undefined, path: SourcePath) {
+  return build?.files.find((file) => file.path === path) ?? null;
+}
+
+function proposalSourceLabel(sourceKind: string) {
+  if (sourceKind === "manual") return "MANUAL EDIT";
+  if (sourceKind === "kimi") return "KIMI SYNTHESIS";
+  return sourceKind.replaceAll("-", " ").toUpperCase() || "ROOM PATCH";
+}
+
+function utf8ByteCount(value: string) {
+  return new TextEncoder().encode(value).byteLength;
+}
 
 function initials(name: string) {
   return name
@@ -132,18 +175,24 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [state, setState] = useState<RoomState | null>(null);
   const slug = state?.room.slug ?? initialSlug;
   const [draft, setDraft] = useState("");
-  const [activeTab, setActiveTab] = useState<"preview" | "code" | "activity">(
+  const [activeTab, setActiveTab] = useState<"preview" | "code" | "diff" | "activity">(
     "preview",
   );
+  const [activeSourcePath, setActiveSourcePath] = useState<SourcePath>("index.html");
+  const [activeDiffPath, setActiveDiffPath] = useState<SourcePath>("index.html");
+  const [sourceDrafts, setSourceDrafts] = useState<Partial<Record<SourcePath, SourceDraft>>>({});
+  const [editorStatus, setEditorStatus] = useState<EditorStatus>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState("Room history is saved automatically");
   const [newRoomOpen, setNewRoomOpen] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
   const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const loadSequence = useRef(0);
 
   const loadRoom = useCallback(
     async (inviteToken?: string | null) => {
+      const sequence = ++loadSequence.current;
       try {
         const response = inviteToken
           ? await fetch("/api/room", {
@@ -155,7 +204,15 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               headers: { accept: "application/json" },
               cache: "no-store",
             });
-        setState(await readResponse<RoomState>(response));
+        const nextState = await readResponse<RoomState>(response);
+        if (sequence !== loadSequence.current) return;
+        setState((current) =>
+          current &&
+          current.room.slug === nextState.room.slug &&
+          current.room.revision > nextState.room.revision
+            ? current
+            : nextState,
+        );
         if (inviteToken) window.history.replaceState({}, "", `/?room=${encodeURIComponent(slug)}`);
         setError(null);
       } catch (loadError) {
@@ -180,7 +237,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   }, [loadRoom]);
 
   const mutateRoom = useCallback(
-    async <T,>(action: string, extra: Record<string, string> = {}) => {
+    async <T,>(action: string, extra: Record<string, RoomActionValue> = {}) => {
       const response = await fetch("/api/room", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -213,7 +270,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     if (!state?.model.configured || busy) return;
     setBusy("synthesize");
     setError(null);
-    setNotice("Kimi is reading the canonical room history and building…");
+    setNotice("Kimi is reading the canonical room history and synthesizing a patch…");
     try {
       const response = await fetch("/api/generate", {
         method: "POST",
@@ -222,12 +279,12 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       });
       setState(await readResponse<RoomState>(response));
       setActiveTab("preview");
-      setNotice("A real artifact is staged · back it before shipping");
+      setNotice("A Kimi source patch is staged · review it before backing");
     } catch (generationError) {
       setError(
         generationError instanceof Error
           ? generationError.message
-          : "Kimi could not finish the artifact.",
+          : "Kimi could not finish the patch.",
       );
       setNotice("Nothing changed · the published build is still safe");
     } finally {
@@ -240,7 +297,12 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     setBusy("vote");
     setError(null);
     try {
-      setState(await mutateRoom<RoomState>("vote"));
+      setState(
+        await mutateRoom<RoomState>("vote", {
+          expectedRevision: state.room.revision,
+          buildId: state.staged.id,
+        }),
+      );
       setNotice(state.votes.myVote ? "Backing removed" : "Your backing is recorded");
     } catch (voteError) {
       setError(voteError instanceof Error ? voteError.message : "The vote could not be saved.");
@@ -314,7 +376,129 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     }
   }
 
+  function updateSourceDraft(content: string) {
+    if (!state || !visibleBuild) return;
+    const sourceFile = getSourceFile(visibleBuild, activeSourcePath);
+    if (!sourceFile) return;
+
+    setSourceDrafts((current) => {
+      const existing = current[activeSourcePath] ?? {
+        content: sourceFile.content,
+        baseContent: sourceFile.content,
+        baseBuildId: visibleBuild.id,
+        expectedRevision: state.room.revision,
+      };
+      const next = { ...current };
+
+      if (content === existing.baseContent) {
+        delete next[activeSourcePath];
+      } else {
+        next[activeSourcePath] = { ...existing, content };
+      }
+
+      return next;
+    });
+    setEditorStatus((current) =>
+      current?.kind === "conflict" && current.path === activeSourcePath ? current : null,
+    );
+  }
+
+  async function saveSourceProposal() {
+    const sourceDraft = sourceDrafts[activeSourcePath];
+    if (!state || !sourceDraft || busy) return;
+
+    setBusy("edit-file");
+    setError(null);
+    setEditorStatus(null);
+
+    try {
+      const response = await fetch("/api/room", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "edit-file",
+          slug,
+          path: activeSourcePath,
+          content: sourceDraft.content,
+          expectedRevision: sourceDraft.expectedRevision,
+          baseBuildId: sourceDraft.baseBuildId,
+        }),
+      });
+      const payload = (await response.json()) as RoomState & { error?: string };
+
+      if (response.status === 409) {
+        setEditorStatus({
+          kind: "conflict",
+          path: activeSourcePath,
+          message: payload.error ?? "The room changed while you were editing.",
+        });
+        setNotice("Your local source is safe · reload the room version or copy your draft");
+        await loadRoom();
+        return;
+      }
+
+      if (!response.ok) throw new Error(payload.error ?? "The source proposal could not be saved.");
+
+      setState(payload);
+      setSourceDrafts((current) => {
+        const next = { ...current };
+        delete next[activeSourcePath];
+        return next;
+      });
+      setEditorStatus({
+        kind: "saved",
+        path: activeSourcePath,
+        message: "Saved as the room’s staged proposal. Active backing was reset.",
+      });
+      setNotice("Source patch staged · review the diff, then gather backing");
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "The source proposal could not save.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function reloadLatestSource() {
+    setSourceDrafts((current) => {
+      const next = { ...current };
+      delete next[activeSourcePath];
+      return next;
+    });
+    setEditorStatus(null);
+    await loadRoom();
+    setNotice("Latest room source loaded");
+  }
+
   const visibleBuild = state?.staged ?? state?.published;
+  const activeSourceFile = getSourceFile(visibleBuild, activeSourcePath);
+  const activeSourceDraft = sourceDrafts[activeSourcePath];
+  const editorValue = activeSourceDraft?.content ?? activeSourceFile?.content ?? "";
+  const editorIsDirty = Boolean(
+    activeSourceDraft && activeSourceDraft.content !== activeSourceDraft.baseContent,
+  );
+  const editorIsStale = Boolean(
+    state &&
+      activeSourceDraft &&
+      (activeSourceDraft.expectedRevision !== state.room.revision ||
+        activeSourceDraft.baseBuildId !== visibleBuild?.id),
+  );
+  const diffByPath = useMemo(() => {
+    const result = {} as Record<
+      SourcePath,
+      { rows: ReturnType<typeof buildDiffLines>; added: number; removed: number }
+    >;
+
+    for (const path of sourcePaths) {
+      const before = getSourceFile(state?.published, path)?.content ?? "";
+      const after = getSourceFile(state?.staged, path)?.content ?? before;
+      const rows = state?.staged ? buildDiffLines(before, after) : [];
+      const stats = rows ? diffStats(rows) : { added: 0, removed: 0 };
+      result[path] = { rows, ...stats };
+    }
+
+    return result;
+  }, [state?.published, state?.staged]);
+  const activeDiff = diffByPath[activeDiffPath];
   const voterMembers = useMemo(
     () =>
       state?.members.filter((member) => state.votes.voterIds.includes(member.id)) ?? [],
@@ -495,7 +679,9 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
           {state?.staged && (
             <article className="proposal-card">
               <div className="proposal-card__topline">
-                <span>REAL PROPOSAL · PATCH {state.staged.version}</span>
+                <span>
+                  {proposalSourceLabel(state.staged.sourceKind)} PROPOSAL · PATCH {state.staged.version}
+                </span>
                 <span>
                   {state.votes.count}/{state.votes.threshold} needed
                 </span>
@@ -511,6 +697,21 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 ))}
               </ul>
               <div className="proposal-card__actions">
+                <button
+                  className="diff-button"
+                  type="button"
+                  onClick={() => {
+                    setActiveDiffPath(
+                      sourcePaths.find(
+                        (path) => diffByPath[path].added > 0 || diffByPath[path].removed > 0,
+                      ) ?? "index.html",
+                    );
+                    setActiveTab("diff");
+                    document.querySelector(".build-panel")?.scrollIntoView({ behavior: "smooth" });
+                  }}
+                >
+                  view diff
+                </button>
                 <div className="micro-stack" aria-label={`${state.votes.count} recorded votes`}>
                   {voterMembers.map((member) => (
                     <Avatar id={member.id} name={member.displayName} small key={member.id} />
@@ -555,7 +756,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 onClick={synthesizeThread}
                 disabled={Boolean(busy) || !state?.model.configured || !state.messages.length}
               >
-                {busy === "synthesize" ? "building with Kimi…" : "synthesize real build ✳"}
+                {busy === "synthesize" ? "synthesizing patch…" : "synthesize patch ✳"}
               </button>
             </div>
             <form className="composer" onSubmit={submitMessage}>
@@ -599,13 +800,15 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
           </div>
 
           <div className="build-tabs" role="tablist" aria-label="Build views">
-            {(["preview", "code", "activity"] as const).map((tabName) => (
+            {(["preview", "code", "diff", "activity"] as const).map((tabName) => (
               <button
                 type="button"
                 role="tab"
                 aria-selected={activeTab === tabName}
                 className={activeTab === tabName ? "is-active" : ""}
                 onClick={() => setActiveTab(tabName)}
+                disabled={tabName === "diff" && !state?.staged}
+                title={tabName === "diff" && !state?.staged ? "Stage a source patch to compare it" : undefined}
                 key={tabName}
               >
                 {tabName}
@@ -614,11 +817,17 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
             <span className="sandbox-label">scriptless sandbox</span>
           </div>
 
-          <div className="build-stage">
+          <div
+            className={`build-stage ${activeTab === "code" || activeTab === "diff" ? "build-stage--ide" : ""}`}
+          >
             {state?.staged && activeTab !== "activity" && (
               <div className="staged-banner">
-                <span>STAGED · NOT PUBLISHED</span>
-                <span>{state.staged.sourceMessageIds.length} source messages</span>
+                <span>{proposalSourceLabel(state.staged.sourceKind)} · STAGED, NOT PUBLISHED</span>
+                <span>
+                  {state.staged.sourceKind === "manual"
+                    ? "room source edit"
+                    : `${state.staged.sourceMessageIds.length} source messages`}
+                </span>
               </div>
             )}
             {activeTab === "preview" && visibleBuild && (
@@ -632,16 +841,171 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               />
             )}
             {activeTab === "code" && visibleBuild && (
-              <div className="code-preview">
-                <div className="code-preview__path">
-                  <span>artifact</span>
-                  <span>/</span>
-                  <strong>index.html</strong>
-                  <span className="code-preview__safe">opaque origin</span>
+              <div className="source-workspace">
+                <aside className="source-files" aria-label="Artifact source files">
+                  <div className="source-files__heading">
+                    <span>SOURCE</span>
+                    <small>2 files</small>
+                  </div>
+                  {sourcePaths.map((path) => {
+                    const file = getSourceFile(visibleBuild, path);
+                    const fileDraft = sourceDrafts[path];
+                    const isDirty = Boolean(fileDraft && fileDraft.content !== fileDraft.baseContent);
+                    return (
+                      <button
+                        className={`${activeSourcePath === path ? "is-active" : ""} ${isDirty ? "is-dirty" : ""}`}
+                        type="button"
+                        onClick={() => setActiveSourcePath(path)}
+                        disabled={!file}
+                        aria-current={activeSourcePath === path ? "page" : undefined}
+                        key={path}
+                      >
+                        <span className={`file-glyph file-glyph--${file?.language ?? "html"}`}>
+                          {file?.language === "css" ? "#" : "<>"}
+                        </span>
+                        <span>
+                          <strong>{path}</strong>
+                          <small>{file ? `${file.byteCount.toLocaleString()} bytes` : "unavailable"}</small>
+                        </span>
+                        {isDirty && <i aria-label="Unsaved local changes" />}
+                      </button>
+                    );
+                  })}
+                  <p>Every save becomes a reviewable room proposal.</p>
+                </aside>
+
+                <section className="source-editor" aria-label={`${activeSourcePath} editor`}>
+                  <div className="source-editor__toolbar">
+                    <div className="source-breadcrumb">
+                      <span>artifact</span>
+                      <span>/</span>
+                      <strong>{activeSourcePath}</strong>
+                    </div>
+                    <div className="source-editor__meta">
+                      {editorIsStale && <span className="source-state source-state--stale">room moved</span>}
+                      {editorIsDirty && <span className="source-state source-state--dirty">local draft</span>}
+                      <span>r{activeSourceDraft?.expectedRevision ?? state?.room.revision ?? 0}</span>
+                    </div>
+                  </div>
+
+                  {editorStatus?.path === activeSourcePath && (
+                    <div
+                      className={`source-editor__notice source-editor__notice--${editorStatus.kind}`}
+                      role={editorStatus.kind === "conflict" ? "alert" : "status"}
+                    >
+                      <span>{editorStatus.kind === "conflict" ? "CONFLICT" : "SAVED"}</span>
+                      <p>{editorStatus.message}</p>
+                      {editorStatus.kind === "conflict" && (
+                        <button type="button" onClick={() => void reloadLatestSource()}>
+                          reload latest
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  <label className="source-editor__input">
+                    <span>Edit {activeSourcePath}</span>
+                    <textarea
+                      value={editorValue}
+                      onChange={(event) => updateSourceDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+                          event.preventDefault();
+                          void saveSourceProposal();
+                        }
+                      }}
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      maxLength={65_536}
+                      aria-label={`Source for ${activeSourcePath}`}
+                    />
+                  </label>
+
+                  <div className="source-editor__footer">
+                    <div>
+                      <span className={editorIsDirty ? "editor-dirty-dot" : "editor-saved-dot"} />
+                      <p>
+                        <strong>{editorIsDirty ? "Local changes not staged" : "Room source in sync"}</strong>
+                        <span>{utf8ByteCount(editorValue).toLocaleString()} bytes · ⌘/Ctrl+S to stage</span>
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void saveSourceProposal()}
+                      disabled={!editorIsDirty || Boolean(busy)}
+                    >
+                      {busy === "edit-file" ? "saving…" : "save as proposal →"}
+                    </button>
+                  </div>
+                </section>
+              </div>
+            )}
+            {activeTab === "diff" && state?.staged && (
+              <div className="diff-workspace">
+                <div className="diff-workspace__header">
+                  <div>
+                    <span className="diff-workspace__eyebrow">PUBLISHED → STAGED</span>
+                    <h3>Patch {state.staged.version} source diff</h3>
+                  </div>
+                  <span className="diff-workspace__source">
+                    {proposalSourceLabel(state.staged.sourceKind)}
+                  </span>
                 </div>
-                <pre>
-                  <code>{visibleBuild.html}</code>
-                </pre>
+
+                <div className="diff-file-tabs" role="tablist" aria-label="Changed source files">
+                  {sourcePaths.map((path) => {
+                    const pathDiff = diffByPath[path];
+                    return (
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={activeDiffPath === path}
+                        className={activeDiffPath === path ? "is-active" : ""}
+                        onClick={() => setActiveDiffPath(path)}
+                        key={path}
+                      >
+                        <strong>{path}</strong>
+                        <span>
+                          <i>+{pathDiff.added}</i>
+                          <b>−{pathDiff.removed}</b>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="diff-summary">
+                  <span>{activeDiffPath}</span>
+                  <p>
+                    <strong>+{activeDiff.added}</strong>
+                    <b>−{activeDiff.removed}</b>
+                  </p>
+                </div>
+
+                {activeDiff.rows === null ? (
+                  <div className="diff-fallback">
+                    <strong>This file is too large for an in-browser line diff.</strong>
+                    <span>Open Code to review the complete staged source safely.</span>
+                    <button type="button" onClick={() => setActiveTab("code")}>open code</button>
+                  </div>
+                ) : activeDiff.rows.length === 0 ||
+                  (activeDiff.added === 0 && activeDiff.removed === 0) ? (
+                  <div className="diff-empty">No changes in {activeDiffPath}.</div>
+                ) : (
+                  <div className="diff-lines" role="table" aria-label={`${activeDiffPath} line diff`}>
+                    {activeDiff.rows.map((line, index) => (
+                      <div className={`diff-line diff-line--${line.type}`} role="row" key={`${index}-${line.type}`}>
+                        <span className="diff-line__number" role="cell">{line.oldNo ?? ""}</span>
+                        <span className="diff-line__number" role="cell">{line.newNo ?? ""}</span>
+                        <span className="diff-line__mark" aria-hidden="true">
+                          {line.type === "add" ? "+" : line.type === "del" ? "−" : line.type === "hunk" ? "@@" : ""}
+                        </span>
+                        <code role="cell">{line.text || " "}</code>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
             {activeTab === "activity" && (
@@ -662,7 +1026,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 ))}
               </div>
             )}
-            {!visibleBuild && activeTab !== "activity" && (
+            {!visibleBuild && activeTab !== "activity" && activeTab !== "diff" && (
               <div className="empty-build">The first published artifact will appear here.</div>
             )}
           </div>
@@ -672,7 +1036,11 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               <span className="build-footer__pulse" />
               <p>
                 <strong>
-                  {state?.staged ? "Previewing an unshipped Kimi artifact" : "The published build is immutable"}
+                  {state?.staged
+                    ? `Reviewing an unshipped ${
+                        state.staged.sourceKind === "manual" ? "room edit" : "Kimi patch"
+                      }`
+                    : "The published build is immutable"}
                 </strong>
                 <span>
                   {state?.staged

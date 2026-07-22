@@ -2,6 +2,7 @@ import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 import { getChatGPTUser } from "../app/chatgpt-auth";
 import { ensureDatabase, getDb } from "../db";
 import {
+  buildFiles,
   builds,
   messages,
   roomMembers,
@@ -9,7 +10,14 @@ import {
   users,
   votes,
 } from "../db/schema";
-import { makeStarterArtifact, secureArtifactHtml } from "./starter-artifact";
+import {
+  assembleArtifactFiles,
+  extractArtifactSource,
+  makeStarterSource,
+  sourceFilesFromGenerated,
+  type ArtifactSourceFile,
+  type ArtifactSourcePath,
+} from "./starter-artifact";
 
 export class RoomError extends Error {
   constructor(
@@ -32,7 +40,10 @@ export type GeneratedArtifact = {
   summary: string;
   changes: string[];
   html: string;
+  files: ArtifactSourceFile[];
 };
+
+const MAX_BUILDS_PER_ROOM = 500;
 
 function nowSql() {
   return sql`CURRENT_TIMESTAMP`;
@@ -63,6 +74,10 @@ function cleanText(value: string, maxLength: number) {
   return value.trim().replace(/\s+/g, " ").slice(0, maxLength);
 }
 
+function byteLength(value: string) {
+  return new TextEncoder().encode(value).byteLength;
+}
+
 async function sha256(value: string) {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -71,6 +86,113 @@ async function sha256(value: string) {
   return Array.from(new Uint8Array(digest), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
+}
+
+async function sourceRows(buildId: string, files: ArtifactSourceFile[]) {
+  return Promise.all(
+    files.map(async (file) => ({
+      buildId,
+      path: file.path,
+      content: file.content,
+      language: file.language,
+      sha256: await sha256(file.content),
+      byteCount: byteLength(file.content),
+    })),
+  );
+}
+
+function asArtifactSourceFiles(
+  rows: Array<{
+    path: string;
+    content: string;
+    language: string;
+  }>,
+): ArtifactSourceFile[] {
+  if (rows.length !== 2) {
+    throw new RoomError("This build does not have a complete source snapshot.", 409);
+  }
+  const files = new Map<ArtifactSourcePath, ArtifactSourceFile>();
+  for (const row of rows) {
+    if (row.path !== "index.html" && row.path !== "styles.css") {
+      throw new RoomError("This build contains an unsupported source path.", 409);
+    }
+    const language = row.path === "index.html" ? "html" : "css";
+    if (row.language !== language || files.has(row.path)) {
+      throw new RoomError("This build contains invalid source metadata.", 409);
+    }
+    files.set(row.path, { path: row.path, content: row.content, language });
+  }
+  const html = files.get("index.html");
+  const css = files.get("styles.css");
+  if (!html || !css) {
+    throw new RoomError("This build does not have a complete source snapshot.", 409);
+  }
+  return [html, css];
+}
+
+async function validateStoredBuildFiles(
+  build: typeof builds.$inferSelect,
+  rows: Array<typeof buildFiles.$inferSelect>,
+) {
+  const files = asArtifactSourceFiles(rows);
+  const expectedRows = await sourceRows(build.id, files);
+  for (const expected of expectedRows) {
+    const stored = rows.find((row) => row.path === expected.path);
+    if (
+      !stored ||
+      stored.language !== expected.language ||
+      stored.sha256 !== expected.sha256 ||
+      stored.byteCount !== expected.byteCount
+    ) {
+      throw new RoomError("This build's source snapshot failed its integrity check.", 409);
+    }
+  }
+  let compiled: string;
+  try {
+    compiled = assembleArtifactFiles(files, build.name);
+  } catch {
+    throw new RoomError("This build's source snapshot failed safety validation.", 409);
+  }
+  if (build.sourceKind !== "legacy" && compiled !== build.html) {
+    throw new RoomError("This build's preview does not match its source snapshot.", 409);
+  }
+  return rows;
+}
+
+async function ensureBuildFiles(build: typeof builds.$inferSelect) {
+  const db = getDb();
+  let rows = await db
+    .select()
+    .from(buildFiles)
+    .where(eq(buildFiles.buildId, build.id))
+    .orderBy(asc(buildFiles.path));
+  if (rows.length > 0) return validateStoredBuildFiles(build, rows);
+
+  let files: ArtifactSourceFile[];
+  try {
+    files = sourceFilesFromGenerated(extractArtifactSource(build.html));
+    assembleArtifactFiles(files, build.name);
+  } catch (error) {
+    throw new RoomError(
+      error instanceof Error
+        ? error.message
+        : "The stored artifact could not be converted into source files.",
+      409,
+    );
+  }
+  await db
+    .insert(buildFiles)
+    .values(await sourceRows(build.id, files))
+    .onConflictDoNothing();
+  rows = await db
+    .select()
+    .from(buildFiles)
+    .where(eq(buildFiles.buildId, build.id))
+    .orderBy(asc(buildFiles.path));
+  if (rows.length !== 2) {
+    throw new RoomError("The build source snapshot could not be initialized.", 500);
+  }
+  return validateStoredBuildFiles(build, rows);
 }
 
 async function hashIdentity(email: string) {
@@ -116,6 +238,8 @@ async function createSeedRoom(identity: Identity) {
   const db = getDb();
   const roomId = crypto.randomUUID();
   const name = "tiny plans";
+  const source = sourceFilesFromGenerated(makeStarterSource(name));
+  const buildId = crypto.randomUUID();
 
   await db
     .insert(rooms)
@@ -144,10 +268,11 @@ async function createSeedRoom(identity: Identity) {
       role: "owner",
     }).onConflictDoNothing(),
     db.insert(builds).values({
-      id: crypto.randomUUID(),
+      id: buildId,
       roomId: room.id,
       version: 1,
       status: "published",
+      sourceKind: "starter",
       name,
       proposalTitle: "A useful place to begin",
       rationale: "Every room starts with a small working artifact, then earns its complexity through conversation.",
@@ -158,11 +283,18 @@ async function createSeedRoom(identity: Identity) {
         "Prepared the room for its first Kimi synthesis",
       ]),
       sourceMessageIdsJson: "[]",
-      html: secureArtifactHtml(makeStarterArtifact(name)),
+      html: assembleArtifactFiles(source, name),
       createdBy: room.ownerId,
       publishedAt: nowSql(),
     }).onConflictDoNothing({ target: [builds.roomId, builds.version] }),
   ]);
+
+  const [seedBuild] = await db
+    .select()
+    .from(builds)
+    .where(and(eq(builds.roomId, room.id), eq(builds.version, 1)))
+    .limit(1);
+  if (seedBuild) await ensureBuildFiles(seedBuild);
 }
 
 async function getRoomForUser(slugValue: string, identity: Identity) {
@@ -400,12 +532,16 @@ export async function releaseGenerationLease(
   ]);
 }
 
-function serializeBuild(build: typeof builds.$inferSelect | undefined) {
+function serializeBuild(
+  build: typeof builds.$inferSelect | undefined,
+  files: Array<typeof buildFiles.$inferSelect> = [],
+) {
   if (!build) return null;
   return {
     id: build.id,
     version: build.version,
     status: build.status,
+    sourceKind: build.sourceKind,
     name: build.name,
     proposalTitle: build.proposalTitle,
     rationale: build.rationale,
@@ -414,8 +550,19 @@ function serializeBuild(build: typeof builds.$inferSelect | undefined) {
     sourceMessageIds: parseStringArray(build.sourceMessageIdsJson),
     html: build.html,
     createdBy: build.createdBy,
+    parentBuildId: build.parentBuildId,
     createdAt: build.createdAt,
     publishedAt: build.publishedAt,
+    files: files
+      .filter((file) => file.buildId === build.id)
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map((file) => ({
+        path: file.path,
+        content: file.content,
+        language: file.language,
+        sha256: file.sha256,
+        byteCount: file.byteCount,
+      })),
   };
 }
 
@@ -423,7 +570,7 @@ export async function getRoomState(slugValue: string, identity: Identity) {
   const room = await getRoomForUser(slugValue, identity);
   const db = getDb();
 
-  const [messageRows, memberRows, buildRows, roomRows, forkCountRows] =
+  const [messageRows, memberRows, historyBuildRows, activeBuildRows, roomRows, forkCountRows] =
     await Promise.all([
       db
         .select({
@@ -456,6 +603,16 @@ export async function getRoomState(slugValue: string, identity: Identity) {
         .orderBy(desc(builds.version), desc(builds.createdAt))
         .limit(20),
       db
+        .select()
+        .from(builds)
+        .where(
+          and(
+            eq(builds.roomId, room.id),
+            sql`${builds.status} IN ('published', 'staged')`,
+          ),
+        )
+        .orderBy(desc(builds.version), desc(builds.createdAt)),
+      db
         .select({
           slug: rooms.slug,
           name: rooms.name,
@@ -473,8 +630,15 @@ export async function getRoomState(slugValue: string, identity: Identity) {
         .where(eq(rooms.parentRoomId, room.id)),
     ]);
 
-  const published = buildRows.find((build) => build.status === "published");
-  const staged = buildRows.find((build) => build.status === "staged");
+  const published = activeBuildRows.find((build) => build.status === "published");
+  const staged = activeBuildRows.find((build) => build.status === "staged");
+  const activeFileRows = (
+    await Promise.all(
+      [published, staged]
+        .filter((build): build is typeof builds.$inferSelect => Boolean(build))
+        .map((build) => ensureBuildFiles(build)),
+    )
+  ).flat();
   let voteCount = 0;
   let myVote = false;
   let voterIds: string[] = [];
@@ -497,6 +661,7 @@ export async function getRoomState(slugValue: string, identity: Identity) {
       slug: room.slug,
       name: room.name,
       note: room.note,
+      revision: room.revision,
       parentRoomId: room.parentRoomId,
       forkCount: Number(forkCountRows[0]?.count ?? 0),
       canInvite: room.ownerId === identity.id,
@@ -510,9 +675,9 @@ export async function getRoomState(slugValue: string, identity: Identity) {
         Date.now() - new Date(`${member.lastSeenAt.replace(" ", "T")}Z`).getTime() <
         120_000,
     })),
-    published: serializeBuild(published),
-    staged: serializeBuild(staged),
-    activity: buildRows.slice(0, 8).map((build) => ({
+    published: serializeBuild(published, activeFileRows),
+    staged: serializeBuild(staged, activeFileRows),
+    activity: historyBuildRows.slice(0, 8).map((build) => ({
       id: build.id,
       version: build.version,
       status: build.status,
@@ -568,6 +733,9 @@ export async function createRoom(
   const id = crypto.randomUUID();
   const slugBase = normalizeSlug(name) || "room";
   const slug = `${slugBase}-${id.slice(0, 6)}`;
+  const buildId = crypto.randomUUID();
+  const source = sourceFilesFromGenerated(makeStarterSource(name));
+  const fileRows = await sourceRows(buildId, source);
   await db.batch([
     db.insert(rooms).values({
       id,
@@ -578,58 +746,342 @@ export async function createRoom(
     }),
     db.insert(roomMembers).values({ roomId: id, userId: identity.id, role: "owner" }),
     db.insert(builds).values({
-      id: crypto.randomUUID(),
+      id: buildId,
       roomId: id,
       version: 1,
       status: "published",
+      sourceKind: "starter",
       name,
       proposalTitle: "Starter artifact",
       rationale: "A room needs something real to react to before the first synthesis.",
       summary: "A small interactive starting point.",
       changesJson: JSON.stringify(["Created the room", "Added a working artifact", "Opened the build history"]),
       sourceMessageIdsJson: "[]",
-      html: secureArtifactHtml(makeStarterArtifact(name)),
+      html: assembleArtifactFiles(source, name),
       createdBy: identity.id,
       publishedAt: nowSql(),
     }),
+    db.insert(buildFiles).values(fileRows),
   ]);
   return slug;
 }
 
-export async function toggleVote(slugValue: string, identity: Identity) {
+export async function editArtifactFile(
+  slugValue: string,
+  identity: Identity,
+  input: {
+    path: string;
+    content: string;
+    expectedRevision: number;
+    baseBuildId: string;
+  },
+) {
+  if (input.path !== "index.html" && input.path !== "styles.css") {
+    throw new RoomError("Only index.html and styles.css can be edited.");
+  }
+  if (typeof input.content !== "string") {
+    throw new RoomError("Source content must be plain text.");
+  }
+  if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) {
+    throw new RoomError("The source revision is invalid.");
+  }
+  if (!input.baseBuildId.trim()) {
+    throw new RoomError("The source build is missing.");
+  }
+
+  const room = await getRoomForUser(slugValue, identity);
+  const db = getDb();
+  const [publishedRows, stagedRows, maxVersionRows] = await Promise.all([
+    db
+      .select()
+      .from(builds)
+      .where(and(eq(builds.roomId, room.id), eq(builds.status, "published")))
+      .orderBy(desc(builds.version))
+      .limit(1),
+    db
+      .select()
+      .from(builds)
+      .where(and(eq(builds.roomId, room.id), eq(builds.status, "staged")))
+      .orderBy(desc(builds.createdAt))
+      .limit(1),
+    db
+      .select({ value: sql<number>`max(${builds.version})` })
+      .from(builds)
+      .where(eq(builds.roomId, room.id)),
+  ]);
+  const published = publishedRows[0];
+  const staged = stagedRows[0];
+  const base = staged ?? published;
+  if (!published || !base) {
+    throw new RoomError("Publish a starting build before editing source.", 409);
+  }
+  if (
+    room.revision !== input.expectedRevision ||
+    base.id !== input.baseBuildId
+  ) {
+    throw new RoomError(
+      "Someone changed this room while you were editing. Your draft is still here; reload the latest source before saving.",
+      409,
+    );
+  }
+
+  const baseFiles = asArtifactSourceFiles(await ensureBuildFiles(base));
+  const nextFiles = baseFiles.map((file) =>
+    file.path === input.path ? { ...file, content: input.content } : file,
+  );
+  let html: string;
+  try {
+    html = assembleArtifactFiles(nextFiles, base.name);
+  } catch (error) {
+    throw new RoomError(
+      error instanceof Error
+        ? error.message
+        : "The source patch failed safety validation.",
+    );
+  }
+  if (
+    nextFiles.every(
+      (file, index) => file.content === baseFiles[index]?.content,
+    )
+  ) {
+    return;
+  }
+
+  const buildId = crypto.randomUUID();
+  const nextVersion = Number(maxVersionRows[0]?.value ?? 0) + 1;
+  if (nextVersion > MAX_BUILDS_PER_ROOM) {
+    throw new RoomError(
+      "This room reached the founder source-history limit. Fork the published app to keep building.",
+      409,
+    );
+  }
+  const fileRows = await sourceRows(buildId, nextFiles);
+  const sourceMessageIdsJson = base.sourceMessageIdsJson;
+  const roomIsCurrent = sql`EXISTS (
+    SELECT 1 FROM rooms
+    WHERE id = ${room.id} AND revision = ${input.expectedRevision}
+  )`;
+  const stagedBuild = db
+    .select({
+      id: sql<string>`${buildId}`.as("id"),
+      roomId: sql<string>`${room.id}`.as("room_id"),
+      version: sql<number>`${nextVersion}`.as("version"),
+      status: sql<string>`${"staged"}`.as("status"),
+      sourceKind: sql<string>`${"manual"}`.as("source_kind"),
+      name: sql<string>`${base.name}`.as("name"),
+      proposalTitle: sql<string>`${`Edit ${input.path}`}`.as("proposal_title"),
+      rationale: sql<string>`${`${identity.displayName} saved a source-level change for the room to review.`}`.as("rationale"),
+      summary: sql<string>`${`Updated ${input.path} from the shared editor.`}`.as("summary"),
+      changesJson: sql<string>`${JSON.stringify([
+        `Changed ${input.path}`,
+        "Created an immutable source snapshot",
+        "Reset backing so the room can review this exact patch",
+      ])}`.as("changes_json"),
+      sourceMessageIdsJson: sql<string>`${sourceMessageIdsJson}`.as(
+        "source_message_ids_json",
+      ),
+      html: sql<string>`${html}`.as("html"),
+      createdBy: sql<string>`${identity.id}`.as("created_by"),
+      parentBuildId: sql<string>`${base.id}`.as("parent_build_id"),
+      createdAt: sql<string>`CURRENT_TIMESTAMP`.as("created_at"),
+      publishedAt: sql<string | null>`${null}`.as("published_at"),
+    })
+    .from(rooms)
+    .where(
+      and(
+        eq(rooms.id, room.id),
+        eq(rooms.revision, input.expectedRevision),
+      ),
+    )
+    .limit(1);
+  const stagedFileRows = fileRows.map((file) =>
+    db
+      .select({
+        buildId: sql<string>`${buildId}`.as("build_id"),
+        path: sql<string>`${file.path}`.as("path"),
+        content: sql<string>`${file.content}`.as("content"),
+        language: sql<string>`${file.language}`.as("language"),
+        sha256: sql<string>`${file.sha256}`.as("sha256"),
+        byteCount: sql<number>`${file.byteCount}`.as("byte_count"),
+        createdAt: sql<string>`CURRENT_TIMESTAMP`.as("created_at"),
+      })
+      .from(builds)
+      .where(eq(builds.id, buildId))
+      .limit(1),
+  );
+
+  await db.batch([
+    db
+      .update(builds)
+      .set({ status: "superseded" })
+      .where(
+        and(
+          eq(builds.roomId, room.id),
+          eq(builds.status, "staged"),
+          staged ? eq(builds.id, staged.id) : sql`0`,
+          roomIsCurrent,
+        ),
+      ),
+    db.insert(builds).select(stagedBuild),
+    ...stagedFileRows.map((row) => db.insert(buildFiles).select(row)),
+    db
+      .update(rooms)
+      .set({
+        updatedAt: nowSql(),
+        revision: sql`${rooms.revision} + 1`,
+      })
+      .where(
+        and(
+          eq(rooms.id, room.id),
+          eq(rooms.revision, input.expectedRevision),
+          sql`EXISTS (
+            SELECT 1 FROM builds
+            WHERE id = ${buildId} AND room_id = ${room.id} AND status = 'staged'
+          )`,
+        ),
+      ),
+  ]);
+
+  const [saved] = await db
+    .select({
+      id: builds.id,
+      files: sql<number>`(
+        SELECT count(*) FROM build_files WHERE build_id = ${buildId}
+      )`,
+    })
+    .from(builds)
+    .where(and(eq(builds.id, buildId), eq(builds.status, "staged")))
+    .limit(1);
+  if (!saved || Number(saved.files) !== 2) {
+    throw new RoomError(
+      "Someone changed this room while you were editing. Your draft is still here; reload the latest source before saving.",
+      409,
+    );
+  }
+}
+
+export async function toggleVote(
+  slugValue: string,
+  identity: Identity,
+  expected: { roomRevision: number; buildId: string },
+) {
+  if (!Number.isSafeInteger(expected.roomRevision) || expected.roomRevision < 0) {
+    throw new RoomError("The vote revision is invalid.");
+  }
+  if (!expected.buildId.trim()) {
+    throw new RoomError("The proposal to vote on is missing.");
+  }
   const room = await getRoomForUser(slugValue, identity);
   const db = getDb();
   const [staged] = await db
     .select()
     .from(builds)
-    .where(and(eq(builds.roomId, room.id), eq(builds.status, "staged")))
-    .orderBy(desc(builds.createdAt))
+    .where(
+      and(
+        eq(builds.id, expected.buildId),
+        eq(builds.roomId, room.id),
+        eq(builds.status, "staged"),
+      ),
+    )
     .limit(1);
-  if (!staged) throw new RoomError("There is no staged build to vote on.", 409);
+  if (!staged || room.revision !== expected.roomRevision) {
+    throw new RoomError(
+      "The proposal changed before your vote was recorded. Review the latest patch and try again.",
+      409,
+    );
+  }
 
   const [existing] = await db
     .select()
     .from(votes)
     .where(and(eq(votes.buildId, staged.id), eq(votes.userId, identity.id)))
     .limit(1);
+  const proposalIsCurrent = sql`EXISTS (
+    SELECT 1 FROM rooms
+    WHERE id = ${room.id} AND revision = ${expected.roomRevision}
+  ) AND EXISTS (
+    SELECT 1 FROM builds
+    WHERE id = ${staged.id} AND room_id = ${room.id} AND status = 'staged'
+  )`;
+  let updatedRooms: Array<{ revision: number }>;
   if (existing) {
-    await db.batch([
+    const result = await db.batch([
       db
         .delete(votes)
-        .where(and(eq(votes.buildId, staged.id), eq(votes.userId, identity.id))),
+        .where(
+          and(
+            eq(votes.buildId, staged.id),
+            eq(votes.userId, identity.id),
+            proposalIsCurrent,
+          ),
+        ),
       db
         .update(rooms)
         .set({ revision: sql`${rooms.revision} + 1` })
-        .where(eq(rooms.id, room.id)),
+        .where(
+          and(
+            eq(rooms.id, room.id),
+            eq(rooms.revision, expected.roomRevision),
+            sql`EXISTS (
+              SELECT 1 FROM builds
+              WHERE id = ${staged.id} AND room_id = ${room.id} AND status = 'staged'
+            )`,
+          ),
+        )
+        .returning({ revision: rooms.revision }),
     ]);
+    updatedRooms = result[1];
   } else {
-    await db.batch([
-      db.insert(votes).values({ buildId: staged.id, userId: identity.id }),
+    const guardedVote = db
+      .select({
+        buildId: sql<string>`${staged.id}`.as("build_id"),
+        userId: sql<string>`${identity.id}`.as("user_id"),
+        createdAt: sql<string>`CURRENT_TIMESTAMP`.as("created_at"),
+      })
+      .from(rooms)
+      .where(
+        and(
+          eq(rooms.id, room.id),
+          eq(rooms.revision, expected.roomRevision),
+          sql`EXISTS (
+            SELECT 1 FROM builds
+            WHERE id = ${staged.id} AND room_id = ${room.id} AND status = 'staged'
+          )`,
+          sql`NOT EXISTS (
+            SELECT 1 FROM votes
+            WHERE build_id = ${staged.id} AND user_id = ${identity.id}
+          )`,
+        ),
+      )
+      .limit(1);
+    const result = await db.batch([
+      db.insert(votes).select(guardedVote),
       db
         .update(rooms)
         .set({ revision: sql`${rooms.revision} + 1` })
-        .where(eq(rooms.id, room.id)),
+        .where(
+          and(
+            eq(rooms.id, room.id),
+            eq(rooms.revision, expected.roomRevision),
+            sql`EXISTS (
+              SELECT 1 FROM builds
+              WHERE id = ${staged.id} AND room_id = ${room.id} AND status = 'staged'
+            )`,
+            sql`EXISTS (
+              SELECT 1 FROM votes
+              WHERE build_id = ${staged.id} AND user_id = ${identity.id}
+            )`,
+          ),
+        )
+        .returning({ revision: rooms.revision }),
     ]);
+    updatedRooms = result[1];
+  }
+  if (updatedRooms.length !== 1) {
+    throw new RoomError(
+      "The proposal changed before your vote was recorded. Review the latest patch and try again.",
+      409,
+    );
   }
 }
 
@@ -643,6 +1095,7 @@ export async function shipBuild(slugValue: string, identity: Identity) {
     .orderBy(desc(builds.createdAt))
     .limit(1);
   if (!staged) throw new RoomError("There is no staged build to ship.", 409);
+  await ensureBuildFiles(staged);
 
   const [memberCountRow, voteCountRow] = await Promise.all([
     db
@@ -665,7 +1118,11 @@ export async function shipBuild(slugValue: string, identity: Identity) {
     SELECT count(*) FROM votes WHERE build_id = ${staged.id}
   ) >= ((
     SELECT count(*) FROM room_members WHERE room_id = ${room.id}
-  ) / 2 + 1)`;
+  ) / 2 + 1) AND (
+    SELECT count(*) FROM build_files WHERE build_id = ${staged.id}
+  ) = 2 AND EXISTS (
+    SELECT 1 FROM rooms WHERE id = ${room.id} AND revision = ${room.revision}
+  )`;
   await db.batch([
     db
       .update(builds)
@@ -700,7 +1157,16 @@ export async function shipBuild(slugValue: string, identity: Identity) {
         updatedAt: nowSql(),
         revision: sql`${rooms.revision} + 1`,
       })
-      .where(eq(rooms.id, room.id)),
+      .where(
+        and(
+          eq(rooms.id, room.id),
+          eq(rooms.revision, room.revision),
+          sql`EXISTS (
+            SELECT 1 FROM builds
+            WHERE id = ${staged.id} AND room_id = ${room.id} AND status = 'published'
+          )`,
+        ),
+      ),
   ]);
 
   const [shipped] = await db
@@ -726,10 +1192,13 @@ export async function forkRoom(slugValue: string, identity: Identity) {
     .orderBy(desc(builds.version))
     .limit(1);
   if (!published) throw new RoomError("This room has no published build to fork.", 409);
+  const publishedFiles = asArtifactSourceFiles(await ensureBuildFiles(published));
 
   const id = crypto.randomUUID();
+  const buildId = crypto.randomUUID();
   const slug = `${normalizeSlug(sourceRoom.name)}-${id.slice(0, 6)}`;
   const name = `${sourceRoom.name} / fork`;
+  const forkFileRows = await sourceRows(buildId, publishedFiles);
   await db.batch([
     db.insert(rooms).values({
       id,
@@ -741,10 +1210,11 @@ export async function forkRoom(slugValue: string, identity: Identity) {
     }),
     db.insert(roomMembers).values({ roomId: id, userId: identity.id, role: "owner" }),
     db.insert(builds).values({
-      id: crypto.randomUUID(),
+      id: buildId,
       roomId: id,
       version: 1,
       status: "published",
+      sourceKind: "fork",
       name: published.name,
       proposalTitle: `Forked ${published.name}`,
       rationale: "A fork preserves the working artifact and gives this room an independent history.",
@@ -756,6 +1226,7 @@ export async function forkRoom(slugValue: string, identity: Identity) {
       parentBuildId: published.id,
       publishedAt: nowSql(),
     }),
+    db.insert(buildFiles).values(forkFileRows),
   ]);
   return slug;
 }
@@ -774,7 +1245,7 @@ export async function getGenerationContext(
       .orderBy(desc(builds.version))
       .limit(1),
     db
-      .select({ id: builds.id })
+      .select()
       .from(builds)
       .where(and(eq(builds.roomId, room.id), eq(builds.status, "staged")))
       .orderBy(desc(builds.createdAt))
@@ -794,6 +1265,8 @@ export async function getGenerationContext(
   ]);
   const published = publishedRows[0];
   if (!published) throw new RoomError("Publish a starting build before synthesizing.", 409);
+  const working = stagedRows[0] ?? published;
+  const workingFiles = asArtifactSourceFiles(await ensureBuildFiles(working));
 
   recentMessages.reverse();
   if (recentMessages.length === 0) {
@@ -813,6 +1286,8 @@ export async function getGenerationContext(
   return {
     room,
     published,
+    working,
+    workingFiles,
     stagedId: stagedRows[0]?.id ?? null,
     stagedVoterIds,
     messages: recentMessages,
@@ -886,7 +1361,20 @@ export async function stageGeneratedArtifact(
   const summary = cleanText(artifact.summary, 320);
   const changesJson = JSON.stringify(artifact.changes.slice(0, 5));
   const sourceMessageIdsJson = JSON.stringify(expected.sourceMessageIds);
-  const html = secureArtifactHtml(artifact.html);
+  const files = asArtifactSourceFiles(artifact.files);
+  const html = assembleArtifactFiles(files, name);
+  const fileRows = await sourceRows(buildId, files);
+  const [maxVersionRow] = await db
+    .select({ value: sql<number>`max(${builds.version})` })
+    .from(builds)
+    .where(eq(builds.roomId, room.id));
+  const nextVersion = Number(maxVersionRow?.value ?? 0) + 1;
+  if (nextVersion > MAX_BUILDS_PER_ROOM) {
+    throw new RoomError(
+      "This room reached the founder source-history limit. Fork the published app to keep building.",
+      409,
+    );
+  }
   const roomIsCurrent = sql`EXISTS (
     SELECT 1 FROM rooms
     WHERE id = ${room.id} AND revision = ${expected.roomRevision}
@@ -895,8 +1383,9 @@ export async function stageGeneratedArtifact(
     .select({
       id: sql<string>`${buildId}`.as("id"),
       roomId: sql<string>`${room.id}`.as("room_id"),
-      version: sql<number>`${published.version + 1}`.as("version"),
+      version: sql<number>`${nextVersion}`.as("version"),
       status: sql<string>`${"staged"}`.as("status"),
+      sourceKind: sql<string>`${"kimi"}`.as("source_kind"),
       name: sql<string>`${name}`.as("name"),
       proposalTitle: sql<string>`${proposalTitle}`.as("proposal_title"),
       rationale: sql<string>`${rationale}`.as("rationale"),
@@ -907,7 +1396,9 @@ export async function stageGeneratedArtifact(
       ),
       html: sql<string>`${html}`.as("html"),
       createdBy: sql<string>`${identity.id}`.as("created_by"),
-      parentBuildId: sql<string>`${published.id}`.as("parent_build_id"),
+      parentBuildId: sql<string>`${expected.stagedBuildId ?? published.id}`.as(
+        "parent_build_id",
+      ),
       createdAt: sql<string>`CURRENT_TIMESTAMP`.as("created_at"),
       publishedAt: sql<string | null>`${null}`.as("published_at"),
     })
@@ -920,9 +1411,26 @@ export async function stageGeneratedArtifact(
     )
     .limit(1);
 
+  const stagedFileRows = fileRows.map((file) =>
+    db
+      .select({
+        buildId: sql<string>`${buildId}`.as("build_id"),
+        path: sql<string>`${file.path}`.as("path"),
+        content: sql<string>`${file.content}`.as("content"),
+        language: sql<string>`${file.language}`.as("language"),
+        sha256: sql<string>`${file.sha256}`.as("sha256"),
+        byteCount: sql<number>`${file.byteCount}`.as("byte_count"),
+        createdAt: sql<string>`CURRENT_TIMESTAMP`.as("created_at"),
+      })
+      .from(builds)
+      .where(eq(builds.id, buildId))
+      .limit(1),
+  );
+
   await db.batch([
     db
-      .delete(builds)
+      .update(builds)
+      .set({ status: "superseded" })
       .where(
         and(
           eq(builds.roomId, room.id),
@@ -934,6 +1442,7 @@ export async function stageGeneratedArtifact(
         ),
       ),
     db.insert(builds).select(stagedBuild),
+    ...stagedFileRows.map((row) => db.insert(buildFiles).select(row)),
     db
       .update(rooms)
       .set({
@@ -949,11 +1458,16 @@ export async function stageGeneratedArtifact(
   ]);
 
   const [staged] = await db
-    .select({ id: builds.id })
+    .select({
+      id: builds.id,
+      files: sql<number>`(
+        SELECT count(*) FROM build_files WHERE build_id = ${buildId}
+      )`,
+    })
     .from(builds)
-    .where(eq(builds.id, buildId))
+    .where(and(eq(builds.id, buildId), eq(builds.status, "staged")))
     .limit(1);
-  if (!staged) {
+  if (!staged || Number(staged.files) !== 2) {
     throw new RoomError(
       "The room changed while Kimi was building. Synthesize again from the latest state.",
       409,

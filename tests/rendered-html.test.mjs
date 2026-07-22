@@ -24,11 +24,16 @@ test("requires identity and drives the product from persisted room state", async
   assert.match(roomRoute, /forkRoom/);
   assert.match(roomRoute, /joinRoom/);
   assert.match(roomRoute, /createRoomInvite/);
+  assert.match(roomRoute, /editArtifactFile/);
   assert.match(roomRoute, /getHomeRoomState/);
   assert.match(roomService, /insert\(messages\)/);
   assert.match(roomService, /insert\(roomMembers\)/);
   assert.match(roomService, /insert\(votes\)/);
   assert.match(roomService, /publishedAt/);
+  assert.match(roomService, /insert\(buildFiles\)/);
+  assert.match(roomService, /status: "superseded"/);
+  assert.match(client, /buildDiffLines/);
+  assert.match(client, /action:\s*"edit-file"/);
   assert.doesNotMatch(client, /const\s+(messages|rooms|members)\s*=\s*\[/);
 });
 
@@ -54,11 +59,13 @@ test("uses canonical server context and fails honestly without Kimi", async () =
 });
 
 test("keeps secrets server-side and generated code inside an opaque sandbox", async () => {
-  const [client, artifact, hosting, migration] = await Promise.all([
+  const [client, artifact, hosting, migration, sourceMigration, notices] = await Promise.all([
     source("../app/RoomClient.tsx"),
     source("../lib/starter-artifact.ts"),
     source("../.openai/hosting.json"),
     source("../drizzle/0000_pale_iron_patriot.sql"),
+    source("../drizzle/0001_collaborative_source.sql"),
+    source("../THIRD_PARTY_NOTICES.md"),
   ]);
 
   assert.doesNotMatch(client, /process\.env|NEXT_PUBLIC_.*(?:KEY|TOKEN|SECRET)/);
@@ -73,4 +80,8 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
   assert.match(migration, /CREATE TABLE `messages`/);
   assert.match(migration, /CREATE TABLE `builds`/);
   assert.match(migration, /CREATE TABLE `votes`/);
+  assert.match(sourceMigration, /CREATE TABLE `build_files`/);
+  assert.match(sourceMigration, /ADD `source_kind`/);
+  assert.match(notices, /Copyright \(c\) 2026 Moonshot AI/);
+  assert.match(notices, /MIT License/);
 });

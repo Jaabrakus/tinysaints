@@ -1,5 +1,9 @@
 import type { GeneratedArtifact } from "./room-service";
-import { assembleGeneratedArtifact } from "./starter-artifact";
+import {
+  assembleGeneratedArtifact,
+  sourceFilesFromGenerated,
+  type ArtifactSourceFile,
+} from "./starter-artifact";
 
 export type ArtifactGenerationInput = {
   room: {
@@ -11,10 +15,10 @@ export type ArtifactGenerationInput = {
     author: string;
     body: string;
   }>;
-  published: {
+  current: {
     name: string;
     version: number;
-    html: string;
+    files: ArtifactSourceFile[];
   };
 };
 
@@ -79,7 +83,7 @@ function requireString(value: unknown, field: string, maxLength: number) {
   return value.trim().slice(0, maxLength);
 }
 
-function validateResult(raw: unknown): Omit<GeneratedArtifact, "html"> & {
+function validateResult(raw: unknown): Omit<GeneratedArtifact, "html" | "files"> & {
   source: { html: string; css: string };
 } {
   if (!raw || typeof raw !== "object") {
@@ -155,7 +159,10 @@ export async function generateArtifact(
           },
           {
             role: "user",
-            content: `ROOM\nName: ${input.room.name}\nPurpose: ${input.room.note}\n\nCANONICAL ROOM THREAD\n${thread}\n\nCURRENT PUBLISHED ARTIFACT · v${input.published.version}\n${input.published.html.slice(0, 80_000)}\n\nBuild the next version from the collective direction. Exactly 3–5 concise change notes are required.`,
+            content: `ROOM\nName: ${input.room.name}\nPurpose: ${input.room.note}\n\nCANONICAL ROOM THREAD\n${thread}\n\nCURRENT SOURCE SNAPSHOT · v${input.current.version}\n${input.current.files
+              .map((file) => `--- ${file.path} ---\n${file.content}`)
+              .join("\n\n")
+              .slice(0, 120_000)}\n\nReturn complete replacements for index.html and styles.css through the required source fields. Build the next version from the collective direction. Exactly 3–5 concise change notes are required.`,
           },
         ],
         response_format: {
@@ -241,5 +248,6 @@ export async function generateArtifact(
     summary: validated.summary,
     changes: validated.changes,
     html,
+    files: sourceFilesFromGenerated(validated.source),
   };
 }
