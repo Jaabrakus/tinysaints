@@ -24,6 +24,10 @@ test("requires identity and drives the product from persisted room state", async
   assert.match(roomRoute, /forkRoom/);
   assert.match(roomRoute, /mergeForkToParent/);
   assert.match(roomRoute, /action === "merge-parent"/);
+  assert.match(roomRoute, /presentForkToParent/);
+  assert.match(roomRoute, /action === "present-parent"/);
+  assert.match(roomRoute, /action === "agent-file"/);
+  assert.match(roomRoute, /action === "delete-file"/);
   assert.match(roomRoute, /joinRoom/);
   assert.match(roomRoute, /createRoomInvite/);
   assert.match(roomRoute, /editArtifactFile/);
@@ -39,6 +43,9 @@ test("requires identity and drives the product from persisted room state", async
   assert.match(client, /buildDiffLines/);
   assert.match(client, /action:\s*"edit-file"/);
   assert.match(client, /mutateRoom<\{ slug: string \}>\("merge-parent"\)/);
+  assert.match(client, /\/api\/chat/);
+  assert.match(client, /sandbox="allow-scripts"/);
+  assert.match(client, /activeTab === "showcase"/);
   assert.doesNotMatch(client, /const\s+(messages|rooms|members)\s*=\s*\[/);
 });
 
@@ -64,22 +71,24 @@ test("uses canonical server context and fails honestly without Kimi", async () =
 });
 
 test("keeps secrets server-side and generated code inside an opaque sandbox", async () => {
-  const [client, artifact, hosting, migration, sourceMigration, notices] = await Promise.all([
+  const [client, artifact, hosting, migration, sourceMigration, workspaceMigration, notices] = await Promise.all([
     source("../app/RoomClient.tsx"),
     source("../lib/starter-artifact.ts"),
     source("../.openai/hosting.json"),
     source("../drizzle/0000_pale_iron_patriot.sql"),
     source("../drizzle/0001_collaborative_source.sql"),
+    source("../drizzle/0002_previous_krista_starr.sql"),
     source("../THIRD_PARTY_NOTICES.md"),
   ]);
 
   assert.doesNotMatch(client, /process\.env|NEXT_PUBLIC_.*(?:KEY|TOKEN|SECRET)/);
-  assert.match(client, /sandbox=""/);
-  assert.doesNotMatch(client, /allow-scripts|allow-same-origin|allow-forms|allow-popups/);
+  assert.match(client, /sandbox="allow-scripts"/);
+  assert.doesNotMatch(client, /allow-same-origin|allow-forms|allow-popups/);
   assert.match(artifact, /default-src 'none'/);
   assert.match(artifact, /connect-src 'none'/);
   assert.match(artifact, /script-src 'none'/);
-  assert.doesNotMatch(artifact, /<script>\$\{safeJavascript\}/);
+  assert.match(artifact, /script-src 'nonce-\$\{scriptNonce\}'/);
+  assert.match(artifact, /forbiddenJavascript/);
   assert.match(hosting, /"d1": "DB"/);
   assert.match(migration, /CREATE TABLE `rooms`/);
   assert.match(migration, /CREATE TABLE `messages`/);
@@ -87,6 +96,9 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
   assert.match(migration, /CREATE TABLE `votes`/);
   assert.match(sourceMigration, /CREATE TABLE `build_files`/);
   assert.match(sourceMigration, /ADD `source_kind`/);
+  assert.match(workspaceMigration, /ADD `presented_at`/);
+  assert.match(workspaceMigration, /ADD `agent_label`/);
+  assert.match(workspaceMigration, /__new_build_files/);
   assert.match(notices, /Copyright \(c\) 2026 Moonshot AI/);
   assert.match(notices, /MIT License/);
 });

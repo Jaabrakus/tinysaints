@@ -9,6 +9,7 @@ import {
   getRoomState,
   joinRoom,
   mergeForkToParent,
+  presentForkToParent,
   RoomError,
   shipBuild,
   toggleVote,
@@ -66,10 +67,11 @@ export async function POST(request: Request) {
       name?: string;
       token?: string;
       path?: string;
-      content?: string;
+      content?: string | null;
       expectedRevision?: number;
       baseBuildId?: string;
       buildId?: string;
+      agentLabel?: string;
     };
     const action = payload.action ?? "";
     const slug = payload.slug ?? "tiny-plans";
@@ -85,12 +87,13 @@ export async function POST(request: Request) {
       await addMessage(slug, identity, payload.body ?? "");
       return Response.json(await getRoomState(slug, identity));
     }
-    if (action === "edit-file") {
+    if (action === "edit-file" || action === "agent-file" || action === "delete-file") {
       await editArtifactFile(slug, identity, {
         path: payload.path ?? "",
-        content: payload.content ?? "",
+        content: action === "delete-file" ? null : payload.content ?? "",
         expectedRevision: payload.expectedRevision ?? -1,
         baseBuildId: payload.baseBuildId ?? "",
+        agentLabel: action === "agent-file" ? payload.agentLabel ?? "Personal agent" : undefined,
       });
       return Response.json(await getRoomState(slug, identity));
     }
@@ -111,6 +114,12 @@ export async function POST(request: Request) {
     if (action === "merge-parent") {
       return Response.json(
         { slug: await mergeForkToParent(slug, identity) },
+        { status: 201 },
+      );
+    }
+    if (action === "present-parent") {
+      return Response.json(
+        { slug: await presentForkToParent(slug, identity) },
         { status: 201 },
       );
     }

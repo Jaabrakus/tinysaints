@@ -3,8 +3,6 @@ import type {
   ArtifactSourcePath,
 } from "./starter-artifact";
 
-const mergeSourcePaths: ArtifactSourcePath[] = ["index.html", "styles.css"];
-
 export type ForkMergeResult = {
   files: ArtifactSourceFile[];
   branchChangedPaths: ArtifactSourcePath[];
@@ -20,10 +18,14 @@ function snapshotByPath(files: ReadonlyArray<ArtifactSourceFile>) {
     }
     byPath.set(file.path, file);
   }
-  for (const path of mergeSourcePaths) {
-    if (!byPath.has(path)) throw new Error(`Missing source path: ${path}`);
-  }
   return byPath;
+}
+
+function sameFile(
+  left: ArtifactSourceFile | undefined,
+  right: ArtifactSourceFile | undefined,
+) {
+  return left?.content === right?.content && left?.language === right?.language;
 }
 
 /**
@@ -43,26 +45,34 @@ export function mergeForkSourceSnapshots(
   const branchChangedPaths: ArtifactSourcePath[] = [];
   const mergedPaths: ArtifactSourcePath[] = [];
   const conflicts: ArtifactSourcePath[] = [];
+  const paths = Array.from(
+    new Set([...ancestor.keys(), ...target.keys(), ...branch.keys()]),
+  ).sort((left, right) => left.localeCompare(right));
 
-  for (const path of mergeSourcePaths) {
-    const baseFile = ancestor.get(path)!;
-    const targetFile = target.get(path)!;
-    const branchFile = branch.get(path)!;
-    const branchChanged = branchFile.content !== baseFile.content;
-    const targetChanged = targetFile.content !== baseFile.content;
+  for (const path of paths) {
+    const baseFile = ancestor.get(path);
+    const targetFile = target.get(path);
+    const branchFile = branch.get(path);
+    const branchChanged = !sameFile(branchFile, baseFile);
+    const targetChanged = !sameFile(targetFile, baseFile);
 
     if (branchChanged) branchChangedPaths.push(path);
 
-    if (branchChanged && targetChanged && branchFile.content !== targetFile.content) {
+    if (branchChanged && targetChanged && !sameFile(branchFile, targetFile)) {
       conflicts.push(path);
-      files.push({ ...targetFile });
+      if (targetFile) files.push({ ...targetFile });
       continue;
     }
 
     const nextFile = branchChanged ? branchFile : targetFile;
-    if (nextFile.content !== targetFile.content) mergedPaths.push(path);
-    files.push({ ...nextFile });
+    if (!sameFile(nextFile, targetFile)) mergedPaths.push(path);
+    if (nextFile) files.push({ ...nextFile });
   }
 
-  return { files, branchChangedPaths, mergedPaths, conflicts };
+  return {
+    files,
+    branchChangedPaths,
+    mergedPaths,
+    conflicts,
+  };
 }

@@ -13,10 +13,12 @@ import {
 import {
   assembleArtifactFiles,
   extractArtifactSource,
-  makeStarterSource,
+  inferArtifactLanguage,
+  makeStarterProject,
   sourceFilesFromGenerated,
+  validateArtifactFiles,
+  validateArtifactPath,
   type ArtifactSourceFile,
-  type ArtifactSourcePath,
 } from "./starter-artifact";
 import { mergeForkSourceSnapshots } from "./fork-merge";
 
@@ -109,26 +111,22 @@ function asArtifactSourceFiles(
     language: string;
   }>,
 ): ArtifactSourceFile[] {
-  if (rows.length !== 2) {
-    throw new RoomError("This build does not have a complete source snapshot.", 409);
+  try {
+    return validateArtifactFiles(
+      rows.map((row) => ({
+        path: row.path,
+        content: row.content,
+        language: row.language as ArtifactSourceFile["language"],
+      })),
+    );
+  } catch (error) {
+    throw new RoomError(
+      error instanceof Error
+        ? error.message
+        : "This build does not have a complete project snapshot.",
+      409,
+    );
   }
-  const files = new Map<ArtifactSourcePath, ArtifactSourceFile>();
-  for (const row of rows) {
-    if (row.path !== "index.html" && row.path !== "styles.css") {
-      throw new RoomError("This build contains an unsupported source path.", 409);
-    }
-    const language = row.path === "index.html" ? "html" : "css";
-    if (row.language !== language || files.has(row.path)) {
-      throw new RoomError("This build contains invalid source metadata.", 409);
-    }
-    files.set(row.path, { path: row.path, content: row.content, language });
-  }
-  const html = files.get("index.html");
-  const css = files.get("styles.css");
-  if (!html || !css) {
-    throw new RoomError("This build does not have a complete source snapshot.", 409);
-  }
-  return [html, css];
 }
 
 async function validateStoredBuildFiles(
@@ -190,7 +188,7 @@ async function ensureBuildFiles(build: typeof builds.$inferSelect) {
     .from(buildFiles)
     .where(eq(buildFiles.buildId, build.id))
     .orderBy(asc(buildFiles.path));
-  if (rows.length !== 2) {
+  if (rows.length < 2) {
     throw new RoomError("The build source snapshot could not be initialized.", 500);
   }
   return validateStoredBuildFiles(build, rows);
@@ -239,7 +237,7 @@ async function createSeedRoom(identity: Identity) {
   const db = getDb();
   const roomId = crypto.randomUUID();
   const name = "tiny plans";
-  const source = sourceFilesFromGenerated(makeStarterSource(name));
+  const source = makeStarterProject(name);
   const buildId = crypto.randomUUID();
 
   await db
@@ -543,6 +541,7 @@ function serializeBuild(
     version: build.version,
     status: build.status,
     sourceKind: build.sourceKind,
+    agentLabel: build.agentLabel,
     name: build.name,
     proposalTitle: build.proposalTitle,
     rationale: build.rationale,
@@ -659,6 +658,7 @@ export async function getRoomState(slugValue: string, identity: Identity) {
           updatedAt: rooms.updatedAt,
           ownerName: users.displayName,
           role: roomMembers.role,
+          presentedAt: rooms.presentedAt,
         })
         .from(rooms)
         .innerJoin(users, eq(rooms.ownerId, users.id))
@@ -696,6 +696,37 @@ export async function getRoomState(slugValue: string, identity: Identity) {
     myVote = voterIds.includes(identity.id);
   }
 
+  const showcase = (
+    await Promise.all(
+      branchRoomRows
+        .filter((branch) => Boolean(branch.presentedAt))
+        .slice(0, 6)
+        .map(async (branch) => {
+          const [showcaseBuild] = await db
+            .select()
+            .from(builds)
+            .innerJoin(rooms, eq(builds.roomId, rooms.id))
+            .where(
+              and(
+                eq(rooms.slug, branch.slug),
+                eq(builds.status, "published"),
+              ),
+            )
+            .orderBy(desc(builds.version))
+            .limit(1);
+          if (!showcaseBuild) return null;
+          const files = await ensureBuildFiles(showcaseBuild.builds);
+          return {
+            slug: branch.slug,
+            name: branch.name,
+            ownerName: branch.ownerName,
+            presentedAt: branch.presentedAt!,
+            build: serializeBuild(showcaseBuild.builds, files),
+          };
+        }),
+    )
+  ).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+
   const threshold = Math.max(1, Math.floor(memberRows.length / 2) + 1);
 
   return {
@@ -707,12 +738,14 @@ export async function getRoomState(slugValue: string, identity: Identity) {
       revision: room.revision,
       parentRoomId: room.parentRoomId,
       parentRoom: parentRoomRows[0] ?? null,
+      presentedAt: room.presentedAt,
       forkCount: Number(forkCountRows[0]?.count ?? 0),
       canInvite: room.ownerId === identity.id,
     },
     user: identity,
     rooms: roomRows,
     branches: branchRoomRows,
+    showcase,
     messages: messageRows.reverse(),
     members: memberRows.map((member) => ({
       ...member,
@@ -779,7 +812,7 @@ export async function createRoom(
   const slugBase = normalizeSlug(name) || "room";
   const slug = `${slugBase}-${id.slice(0, 6)}`;
   const buildId = crypto.randomUUID();
-  const source = sourceFilesFromGenerated(makeStarterSource(name));
+  const source = makeStarterProject(name);
   const fileRows = await sourceRows(buildId, source);
   await db.batch([
     db.insert(rooms).values({
@@ -816,15 +849,19 @@ export async function editArtifactFile(
   identity: Identity,
   input: {
     path: string;
-    content: string;
+    content: string | null;
     expectedRevision: number;
     baseBuildId: string;
+    agentLabel?: string;
   },
 ) {
-  if (input.path !== "index.html" && input.path !== "styles.css") {
-    throw new RoomError("Only index.html and styles.css can be edited.");
+  let sourcePath: string;
+  try {
+    sourcePath = validateArtifactPath(input.path);
+  } catch (error) {
+    throw new RoomError(error instanceof Error ? error.message : "That file path is invalid.");
   }
-  if (typeof input.content !== "string") {
+  if (input.content !== null && typeof input.content !== "string") {
     throw new RoomError("Source content must be plain text.");
   }
   if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) {
@@ -833,6 +870,9 @@ export async function editArtifactFile(
   if (!input.baseBuildId.trim()) {
     throw new RoomError("The source build is missing.");
   }
+  const agentLabel = input.agentLabel
+    ? cleanText(input.agentLabel, 80)
+    : null;
 
   const room = await getRoomForUser(slugValue, identity);
   const db = getDb();
@@ -871,8 +911,29 @@ export async function editArtifactFile(
   }
 
   const baseFiles = asArtifactSourceFiles(await ensureBuildFiles(base));
-  const nextFiles = baseFiles.map((file) =>
-    file.path === input.path ? { ...file, content: input.content } : file,
+  const existingFile = baseFiles.find((file) => file.path === sourcePath);
+  const isRemoval = input.content === null;
+  if (isRemoval && (sourcePath === "index.html" || sourcePath === "styles.css")) {
+    throw new RoomError("index.html and styles.css are required project files.");
+  }
+  if (isRemoval && !existingFile) {
+    throw new RoomError("That project file no longer exists.", 409);
+  }
+  const nextFiles = validateArtifactFiles(
+    isRemoval
+      ? baseFiles.filter((file) => file.path !== sourcePath)
+      : existingFile
+      ? baseFiles.map((file) =>
+          file.path === sourcePath ? { ...file, content: input.content! } : file,
+        )
+      : [
+          ...baseFiles,
+          {
+            path: sourcePath,
+            content: input.content!,
+            language: inferArtifactLanguage(sourcePath),
+          },
+        ],
   );
   let html: string;
   try {
@@ -912,13 +973,14 @@ export async function editArtifactFile(
       roomId: sql<string>`${room.id}`.as("room_id"),
       version: sql<number>`${nextVersion}`.as("version"),
       status: sql<string>`${"staged"}`.as("status"),
-      sourceKind: sql<string>`${"manual"}`.as("source_kind"),
+      sourceKind: sql<string>`${agentLabel ? "personal-agent" : "manual"}`.as("source_kind"),
+      agentLabel: sql<string | null>`${agentLabel}`.as("agent_label"),
       name: sql<string>`${base.name}`.as("name"),
-      proposalTitle: sql<string>`${`Edit ${input.path}`}`.as("proposal_title"),
-      rationale: sql<string>`${`${identity.displayName} saved a source-level change for the room to review.`}`.as("rationale"),
-      summary: sql<string>`${`Updated ${input.path} from the shared editor.`}`.as("summary"),
+      proposalTitle: sql<string>`${`${agentLabel ? `${agentLabel}: ` : ""}${isRemoval ? "Remove" : existingFile ? "Edit" : "Add"} ${sourcePath}`}`.as("proposal_title"),
+      rationale: sql<string>`${agentLabel ? `${identity.displayName}'s personal agent proposed this source change for the room to review.` : `${identity.displayName} saved a source-level change for the room to review.`}`.as("rationale"),
+      summary: sql<string>`${`${isRemoval ? "Removed" : existingFile ? "Updated" : "Added"} ${sourcePath} from ${agentLabel ?? "the shared editor"}.`}`.as("summary"),
       changesJson: sql<string>`${JSON.stringify([
-        `Changed ${input.path}`,
+        `${isRemoval ? "Removed" : existingFile ? "Changed" : "Added"} ${sourcePath}`,
         "Created an immutable source snapshot",
         "Reset backing so the room can review this exact patch",
       ])}`.as("changes_json"),
@@ -997,7 +1059,7 @@ export async function editArtifactFile(
     .from(builds)
     .where(and(eq(builds.id, buildId), eq(builds.status, "staged")))
     .limit(1);
-  if (!saved || Number(saved.files) !== 2) {
+  if (!saved || Number(saved.files) !== nextFiles.length) {
     throw new RoomError(
       "Someone changed this room while you were editing. Your draft is still here; reload the latest source before saving.",
       409,
@@ -1140,7 +1202,7 @@ export async function shipBuild(slugValue: string, identity: Identity) {
     .orderBy(desc(builds.createdAt))
     .limit(1);
   if (!staged) throw new RoomError("There is no staged build to ship.", 409);
-  await ensureBuildFiles(staged);
+  const stagedFiles = await ensureBuildFiles(staged);
 
   const [memberCountRow, voteCountRow] = await Promise.all([
     db
@@ -1165,7 +1227,7 @@ export async function shipBuild(slugValue: string, identity: Identity) {
     SELECT count(*) FROM room_members WHERE room_id = ${room.id}
   ) / 2 + 1) AND (
     SELECT count(*) FROM build_files WHERE build_id = ${staged.id}
-  ) = 2 AND EXISTS (
+  ) = ${stagedFiles.length} AND EXISTS (
     SELECT 1 FROM rooms WHERE id = ${room.id} AND revision = ${room.revision}
   )`;
   await db.batch([
@@ -1276,6 +1338,61 @@ export async function forkRoom(slugValue: string, identity: Identity) {
   return slug;
 }
 
+export async function presentForkToParent(
+  slugValue: string,
+  identity: Identity,
+) {
+  const branchRoom = await getRoomForUser(slugValue, identity);
+  if (!branchRoom.parentRoomId) {
+    throw new RoomError("Only a fork can be presented to a parent room.", 409);
+  }
+  if (branchRoom.ownerId !== identity.id) {
+    throw new RoomError("Only the fork owner can present this branch.", 403);
+  }
+  const db = getDb();
+  const [parent] = await db
+    .select({ slug: rooms.slug, id: rooms.id })
+    .from(rooms)
+    .where(eq(rooms.id, branchRoom.parentRoomId))
+    .limit(1);
+  if (!parent) throw new RoomError("The parent room no longer exists.", 409);
+  await getRoomForUser(parent.slug, identity);
+
+  const [published, staged] = await Promise.all([
+    db
+      .select({ id: builds.id })
+      .from(builds)
+      .where(and(eq(builds.roomId, branchRoom.id), eq(builds.status, "published")))
+      .orderBy(desc(builds.version))
+      .limit(1),
+    db
+      .select({ id: builds.id })
+      .from(builds)
+      .where(and(eq(builds.roomId, branchRoom.id), eq(builds.status, "staged")))
+      .limit(1),
+  ]);
+  if (!published[0]) throw new RoomError("Publish the fork before presenting it.", 409);
+  if (staged[0]) {
+    throw new RoomError("Ship or replace the fork's staged proposal before presenting it.", 409);
+  }
+
+  await db.batch([
+    db
+      .update(rooms)
+      .set({
+        presentedAt: nowSql(),
+        updatedAt: nowSql(),
+        revision: sql`${rooms.revision} + 1`,
+      })
+      .where(eq(rooms.id, branchRoom.id)),
+    db
+      .update(rooms)
+      .set({ updatedAt: nowSql(), revision: sql`${rooms.revision} + 1` })
+      .where(eq(rooms.id, parent.id)),
+  ]);
+  return parent.slug;
+}
+
 export async function mergeForkToParent(
   slugValue: string,
   identity: Identity,
@@ -1310,7 +1427,7 @@ export async function mergeForkToParent(
       .orderBy(desc(builds.version))
       .limit(1),
     db
-      .select({ id: builds.id })
+      .select()
       .from(builds)
       .where(and(eq(builds.roomId, branchRoom.id), eq(builds.status, "staged")))
       .limit(1),
@@ -1433,6 +1550,7 @@ export async function mergeForkToParent(
       version: sql<number>`${nextVersion}`.as("version"),
       status: sql<string>`${"staged"}`.as("status"),
       sourceKind: sql<string>`${"fork-merge"}`.as("source_kind"),
+      agentLabel: sql<string | null>`${null}`.as("agent_label"),
       name: sql<string>`${parentWorking.name}`.as("name"),
       proposalTitle: sql<string>`${`Merge ${branchRoom.name}`}`.as("proposal_title"),
       rationale: sql<string>`${`${identity.displayName} proposed the fork's published work back into ${parentRoom.name}.`}`.as("rationale"),
@@ -1519,7 +1637,7 @@ export async function mergeForkToParent(
     .from(builds)
     .where(and(eq(builds.id, buildId), eq(builds.status, "staged")))
     .limit(1);
-  if (!saved || Number(saved.files) !== 2) {
+  if (!saved || Number(saved.files) !== merge.files.length) {
     throw new RoomError(
       "The parent changed while this fork was combining. Nothing was lost; try the merge again.",
       409,
@@ -1614,7 +1732,7 @@ export async function stageGeneratedArtifact(
       .orderBy(desc(builds.version))
       .limit(1),
     db
-      .select({ id: builds.id })
+      .select()
       .from(builds)
       .where(and(eq(builds.roomId, room.id), eq(builds.status, "staged")))
       .orderBy(desc(builds.createdAt))
@@ -1659,7 +1777,15 @@ export async function stageGeneratedArtifact(
   const summary = cleanText(artifact.summary, 320);
   const changesJson = JSON.stringify(artifact.changes.slice(0, 5));
   const sourceMessageIdsJson = JSON.stringify(expected.sourceMessageIds);
-  const files = asArtifactSourceFiles(artifact.files);
+  const generatedFiles = asArtifactSourceFiles(artifact.files);
+  const workingBuild = stagedRows[0] ?? published;
+  const workingFiles = asArtifactSourceFiles(await ensureBuildFiles(workingBuild));
+  const generatedByPath = new Map(
+    generatedFiles.map((file) => [file.path, file] as const),
+  );
+  const files = validateArtifactFiles(
+    workingFiles.map((file) => generatedByPath.get(file.path) ?? file),
+  );
   const html = assembleArtifactFiles(files, name);
   const fileRows = await sourceRows(buildId, files);
   const [maxVersionRow] = await db
@@ -1684,6 +1810,7 @@ export async function stageGeneratedArtifact(
       version: sql<number>`${nextVersion}`.as("version"),
       status: sql<string>`${"staged"}`.as("status"),
       sourceKind: sql<string>`${"kimi"}`.as("source_kind"),
+      agentLabel: sql<string | null>`${"Kimi K3"}`.as("agent_label"),
       name: sql<string>`${name}`.as("name"),
       proposalTitle: sql<string>`${proposalTitle}`.as("proposal_title"),
       rationale: sql<string>`${rationale}`.as("rationale"),
@@ -1765,7 +1892,7 @@ export async function stageGeneratedArtifact(
     .from(builds)
     .where(and(eq(builds.id, buildId), eq(builds.status, "staged")))
     .limit(1);
-  if (!staged || Number(staged.files) !== 2) {
+  if (!staged || Number(staged.files) !== files.length) {
     throw new RoomError(
       "The room changed while Kimi was building. Synthesize again from the latest state.",
       409,

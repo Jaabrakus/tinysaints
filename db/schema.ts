@@ -34,6 +34,7 @@ export const rooms = sqliteTable(
     generationLeaseId: text("generation_lease_id"),
     generationLockedUntil: text("generation_locked_until"),
     lastGeneratedAt: text("last_generated_at"),
+    presentedAt: text("presented_at"),
     revision: integer("revision").notNull().default(0),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -91,6 +92,7 @@ export const builds = sqliteTable(
     version: integer("version").notNull(),
     status: text("status").notNull(),
     sourceKind: text("source_kind").notNull().default("legacy"),
+    agentLabel: text("agent_label"),
     name: text("name").notNull(),
     proposalTitle: text("proposal_title").notNull(),
     rationale: text("rationale").notNull(),
@@ -126,13 +128,13 @@ export const buildFiles = sqliteTable(
   },
   (table) => [
     primaryKey({ columns: [table.buildId, table.path] }),
-    check(
-      "build_files_path_check",
-      sql`${table.path} IN ('index.html', 'styles.css')`,
-    ),
+    check("build_files_path_length_check", sql`length(${table.path}) BETWEEN 1 AND 120`),
+    check("build_files_path_start_check", sql`${table.path} NOT LIKE '/%'`),
+    check("build_files_path_end_check", sql`${table.path} NOT LIKE '%/'`),
+    check("build_files_path_slashes_check", sql`${table.path} NOT LIKE '%//%'`),
     check(
       "build_files_language_check",
-      sql`(${table.path} = 'index.html' AND ${table.language} = 'html') OR (${table.path} = 'styles.css' AND ${table.language} = 'css')`,
+      sql`${table.language} IN ('html', 'css', 'javascript', 'json', 'markdown', 'text')`,
     ),
     check(
       "build_files_byte_count_check",

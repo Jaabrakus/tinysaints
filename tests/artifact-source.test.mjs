@@ -5,18 +5,22 @@ import {
   assembleArtifactFiles,
   extractArtifactSource,
   generatedSourceFromFiles,
-  makeStarterSource,
-  sourceFilesFromGenerated,
+  makeStarterProject,
 } from "../lib/starter-artifact.ts";
 
-test("compiles and reopens the canonical two-file starter source", () => {
-  const files = sourceFilesFromGenerated(makeStarterSource("source room"));
+test("compiles the bounded multi-file starter project", () => {
+  const files = makeStarterProject("source room");
   const artifact = assembleArtifactFiles(files, "source room");
   const reopened = extractArtifactSource(artifact);
 
   assert.deepEqual(reopened, generatedSourceFromFiles(files));
+  assert.deepEqual(
+    files.map((file) => file.path),
+    ["index.html", "README.md", "src/app.js", "styles.css"],
+  );
   assert.match(artifact, /default-src 'none'/);
-  assert.match(artifact, /script-src 'none'/);
+  assert.match(artifact, /script-src 'nonce-make-room-project'/);
+  assert.match(artifact, /const status = document\.querySelector/);
   assert.match(artifact, /connect-src 'none'/);
 });
 
@@ -62,5 +66,21 @@ test("manual and model source share the same capability boundary", () => {
         "unsafe",
       ),
     /external asset/,
+  );
+  assert.throws(
+    () =>
+      assembleArtifactFiles(
+        [
+          { path: "index.html", content: "<main>unsafe js</main>", language: "html" },
+          { path: "styles.css", content: "main{}", language: "css" },
+          {
+            path: "src/app.js",
+            content: "window.parent.postMessage('steal', '*')",
+            language: "javascript",
+          },
+        ],
+        "unsafe",
+      ),
+    /capability the preview does not allow/,
   );
 });

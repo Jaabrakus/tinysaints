@@ -9,16 +9,20 @@ make/room is a working founder MVP for collective software creation. Signed-in p
 - ChatGPT identity at the application boundary
 - durable invite-only rooms, memberships, messages, proposals, votes, versions, and forks in Cloudflare D1
 - server-side Kimi K3 synthesis using the room's canonical message history
-- a two-file collaborative editor for `index.html` and `styles.css`, with optimistic conflict protection
+- a bounded multi-file project tree with folders, optimistic conflict protection, and immutable whole-project snapshots
+- browser JavaScript through a nonce-scoped, opaque sandbox with storage, navigation, workers, and network access blocked
 - immutable source snapshots and a line-by-line review diff on every manual or Kimi proposal
 - an explicit staged-to-published approval flow with majority voting
 - immutable published versions, independent fork histories, and fork-to-parent merge proposals
 - safe three-way convergence: different files combine automatically while overlapping file edits stop as conflicts
-- generated scriptless single-page apps running in an opaque, network-blocked sandboxed iframe
+- fork presentations that expose an explicitly presented published build to the parent room without exposing the fork's private working history
+- a device-local Ollama adapter that proposes the active file under the signed-in maker's identity and never sends the local endpoint to the room
 - one in-flight synthesis per room plus per-user cooldown and daily founder limits
 - honest failure states when Kimi is unavailable or not configured—there is no demo fallback
 
-The generated-app boundary is intentionally narrow. Kimi generates HTML and CSS, including native interaction through `details`/`summary`, checkboxes, and radio state. The result is validated, size-limited, given a restrictive content security policy, and rendered without scripts, same-origin access, forms, storage, navigation, or network APIs. Arbitrary JavaScript, dependencies, and server-backed generated apps will require a separate isolated runner with enforced resource and egress limits.
+The generated-app boundary is intentionally narrow. Kimi still generates validated HTML and CSS. Makers and their personal local agents may also edit a bounded `src/app.js` entry file and add supporting text files in folders. JavaScript runs in an opaque iframe with no same-origin access, storage, workers, forms, navigation, or network APIs. Package installation, imported dependencies, and server-backed generated apps still require a separate isolated runner with enforced resource and egress limits.
+
+Room state refreshes every two seconds while the page is visible. That gives the team fast shared state and presence for the MVP, but it is not a CRDT editor, shared cursor system, or synchronized remote browser session.
 
 ## Run locally
 
@@ -44,6 +48,10 @@ Local requests need the ChatGPT identity header supplied by the hosting environm
 ## Model boundary
 
 [`lib/model-provider.ts`](lib/model-provider.ts) owns the replaceable provider integration. It sends only server-loaded room data to Kimi, requires a strict structured response, and does not trust messages supplied by the browser.
+
+The Code workspace also includes a personal-agent panel for a maker's local Ollama server. The endpoint and model preference remain in that browser. Ollama receives only the active file and the maker's instruction; the room receives only the completed file proposal, agent label, immutable source snapshot, and review diff. Local browser access may require configuring Ollama to allow the hosted site's origin.
+
+The adapter uses Ollama's documented local [`POST /api/chat`](https://docs.ollama.com/api/chat) endpoint and [JSON-schema structured outputs](https://docs.ollama.com/capabilities/structured-outputs).
 
 Kimi K3 is the initial quality baseline. As of July 22, 2026, the API model is available as `kimi-k3`; Moonshot says the weights and technical report will follow on July 27. Review the eventual weight license before self-hosting it commercially. Moonshot's current API terms also restrict products with potential competitive overlap without authorization, so production use should receive written commercial clearance.
 
@@ -74,7 +82,8 @@ npm run lint     # source linting
 
 1. Expiring, scoped invitations plus explicit private/public room controls.
 2. Configurable organization budgets and abuse controls beyond the fixed MVP limits.
-3. A containerized build/test runner for generated projects with dependencies or backends.
-4. Exportable Git repositories and signed commit attribution.
-5. CRDT/live-cursor editing after the optimistic collaboration model proves useful.
-6. Public discovery based on useful shipped apps instead of an engagement feed.
+3. A containerized build/test runner for imported dependencies and controlled server functions.
+4. A real-time room channel plus presenter/follower preview state.
+5. Exportable Git repositories and signed commit attribution.
+6. CRDT/live-cursor editing after the parallel-branch collaboration model proves useful.
+7. Public discovery based on useful shipped apps instead of an engagement feed.

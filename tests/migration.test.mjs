@@ -66,6 +66,30 @@ test("upgrades the deployed schema with immutable source snapshots", async () =>
     /CHECK|UNIQUE constraint failed/,
   );
 
+  database.exec(await migration("0002_previous_krista_starr.sql"));
+  const roomColumns = database.prepare("PRAGMA table_info(rooms)").all();
+  const upgradedBuildColumns = database.prepare("PRAGMA table_info(builds)").all();
+  assert.ok(roomColumns.some((column) => column.name === "presented_at"));
+  assert.ok(upgradedBuildColumns.some((column) => column.name === "agent_label"));
+  database
+    .prepare(
+      "INSERT INTO build_files (build_id, path, content, language, sha256, byte_count) VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .run("build-1", "src/app.js", "const ready = true", "javascript", "d".repeat(64), 18);
+  assert.equal(
+    database.prepare("SELECT count(*) AS count FROM build_files").get().count,
+    3,
+  );
+  assert.throws(
+    () =>
+      database
+        .prepare(
+          "INSERT INTO build_files (build_id, path, content, language, sha256, byte_count) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run("build-1", "/escape.js", "bad", "javascript", "e".repeat(64), 3),
+    /CHECK constraint failed/,
+  );
+
   database.prepare("DELETE FROM builds WHERE id = ?").run("build-1");
   assert.equal(
     database.prepare("SELECT count(*) AS count FROM build_files").get().count,

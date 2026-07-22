@@ -5,13 +5,13 @@ import Link from "next/link";
 import { buildDiffLines, diffStats } from "../lib/kimi-code-diff";
 
 type Color = "lime" | "violet" | "coral" | "sky" | "cream";
-type SourcePath = "index.html" | "styles.css";
+type SourcePath = string;
 type RoomActionValue = string | number | boolean | null;
 
 type SourceFile = {
   path: SourcePath;
   content: string;
-  language: "html" | "css";
+  language: "html" | "css" | "javascript" | "json" | "markdown" | "text";
   sha256: string;
   byteCount: number;
 };
@@ -28,6 +28,7 @@ type Build = {
   sourceMessageIds: string[];
   html: string;
   sourceKind: string;
+  agentLabel: string | null;
   parentBuildId: string | null;
   files: SourceFile[];
   createdBy: string;
@@ -43,6 +44,7 @@ type RoomState = {
     note: string;
     parentRoomId: string | null;
     parentRoom: { slug: string; name: string; updatedAt: string } | null;
+    presentedAt: string | null;
     forkCount: number;
     canInvite: boolean;
     revision: number;
@@ -55,6 +57,14 @@ type RoomState = {
     updatedAt: string;
     ownerName: string;
     role: string | null;
+    presentedAt: string | null;
+  }>;
+  showcase: Array<{
+    slug: string;
+    name: string;
+    ownerName: string;
+    presentedAt: string;
+    build: Build;
   }>;
   messages: Array<{
     id: string;
@@ -109,8 +119,6 @@ type Props = {
 };
 
 const colors: Color[] = ["coral", "violet", "sky", "cream", "lime"];
-const sourcePaths: SourcePath[] = ["index.html", "styles.css"];
-
 function getSourceFile(build: Build | null | undefined, path: SourcePath) {
   return build?.files.find((file) => file.path === path) ?? null;
 }
@@ -118,7 +126,28 @@ function getSourceFile(build: Build | null | undefined, path: SourcePath) {
 function proposalSourceLabel(sourceKind: string) {
   if (sourceKind === "manual") return "MANUAL EDIT";
   if (sourceKind === "kimi") return "KIMI SYNTHESIS";
+  if (sourceKind === "personal-agent") return "PERSONAL AGENT";
+  if (sourceKind === "fork-merge") return "FORK CONVERGENCE";
   return sourceKind.replaceAll("-", " ").toUpperCase() || "ROOM PATCH";
+}
+
+function languageForPath(path: string): SourceFile["language"] {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
+  if (lower.endsWith(".css")) return "css";
+  if (lower.endsWith(".js") || lower.endsWith(".mjs")) return "javascript";
+  if (lower.endsWith(".json")) return "json";
+  if (lower.endsWith(".md") || lower.endsWith(".mdx")) return "markdown";
+  return "text";
+}
+
+function fileGlyph(language: SourceFile["language"]) {
+  if (language === "css") return "#";
+  if (language === "javascript") return "JS";
+  if (language === "json") return "{}";
+  if (language === "markdown") return "M↓";
+  if (language === "html") return "<>";
+  return "–";
 }
 
 function utf8ByteCount(value: string) {
@@ -183,7 +212,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [state, setState] = useState<RoomState | null>(null);
   const slug = state?.room.slug ?? initialSlug;
   const [draft, setDraft] = useState("");
-  const [activeTab, setActiveTab] = useState<"preview" | "code" | "diff" | "activity">(
+  const [activeTab, setActiveTab] = useState<"preview" | "code" | "diff" | "showcase" | "activity">(
     "code",
   );
   const [activeSourcePath, setActiveSourcePath] = useState<SourcePath>("index.html");
@@ -195,6 +224,21 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [notice, setNotice] = useState("Room history is saved automatically");
   const [newRoomOpen, setNewRoomOpen] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
+  const [newFileOpen, setNewFileOpen] = useState(false);
+  const [newFilePath, setNewFilePath] = useState("");
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [agentEndpoint, setAgentEndpoint] = useState(() =>
+    typeof window === "undefined"
+      ? "http://localhost:11434"
+      : window.localStorage.getItem("make-room-agent-endpoint") ??
+        "http://localhost:11434",
+  );
+  const [agentModel, setAgentModel] = useState(() =>
+    typeof window === "undefined"
+      ? "qwen3:4b"
+      : window.localStorage.getItem("make-room-agent-model") ?? "qwen3:4b",
+  );
+  const [agentInstruction, setAgentInstruction] = useState("");
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const loadSequence = useRef(0);
   const editorGutter = useRef<HTMLPreElement>(null);
@@ -240,7 +284,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     }, 0);
     const interval = window.setInterval(() => {
       if (!document.hidden) void loadRoom();
-    }, 5_000);
+    }, 2_000);
     return () => {
       window.clearTimeout(initialLoad);
       window.clearInterval(interval);
@@ -368,6 +412,25 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     }
   }
 
+  async function presentToParent() {
+    if (!state?.room.parentRoom || !state.published || state.staged || busy) return;
+    setBusy("present-parent");
+    setError(null);
+    try {
+      await mutateRoom<{ slug: string }>("present-parent");
+      await loadRoom();
+      setNotice("Published fork presented to the parent room · the team can compare it now");
+    } catch (presentError) {
+      setError(
+        presentError instanceof Error
+          ? presentError.message
+          : "The fork could not be presented.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function makeRoom(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!newRoomName.trim() || busy) return;
@@ -406,21 +469,163 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     }
   }
 
+  function createProjectFile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!state || !visibleBuild) return;
+    const path = newFilePath.trim();
+    if (
+      !path ||
+      path.length > 120 ||
+      path.startsWith("/") ||
+      path.endsWith("/") ||
+      path.includes("//") ||
+      !/^[A-Za-z0-9._/-]+$/.test(path) ||
+      path.split("/").some((part) => part === "." || part === "..")
+    ) {
+      setError("Use a safe relative path such as components/card.js or notes/idea.md.");
+      return;
+    }
+    if (visibleBuild.files.some((file) => file.path === path)) {
+      setError("That project file already exists.");
+      return;
+    }
+    setSourceDrafts((current) => ({
+      ...current,
+      [path]: {
+        content: "",
+        baseContent: "",
+        baseBuildId: visibleBuild.id,
+        expectedRevision: state.room.revision,
+      },
+    }));
+    setActiveSourcePath(path);
+    setNewFilePath("");
+    setNewFileOpen(false);
+    setEditorStatus(null);
+    setError(null);
+    setNotice(`${path} is a local draft · add content, then stage it for review`);
+  }
+
+  async function runPersonalAgent(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!state || !visibleBuild || !activeSourcePath || busy) return;
+    const endpoint = agentEndpoint.trim().replace(/\/$/, "");
+    let endpointUrl: URL;
+    try {
+      endpointUrl = new URL(endpoint);
+    } catch {
+      setError("Enter a valid local Ollama address.");
+      return;
+    }
+    if (
+      endpointUrl.protocol !== "http:" ||
+      !["localhost", "127.0.0.1", "[::1]"].includes(endpointUrl.hostname)
+    ) {
+      setError("The personal-agent MVP only connects to Ollama on this device.");
+      return;
+    }
+    const model = agentModel.trim();
+    if (!model || !agentInstruction.trim()) return;
+    const agentBase = activeSourceDraft ?? {
+      content: editorValue,
+      baseContent: editorValue,
+      baseBuildId: visibleBuild.id,
+      expectedRevision: state.room.revision,
+    };
+
+    setBusy("personal-agent");
+    setError(null);
+    setNotice(`${model} is working privately on ${activeSourcePath}…`);
+    window.localStorage.setItem("make-room-agent-endpoint", endpoint);
+    window.localStorage.setItem("make-room-agent-model", model);
+
+    try {
+      const response = await fetch(`${endpoint}/api/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model,
+          stream: false,
+          options: { temperature: 0 },
+          format: {
+            type: "object",
+            additionalProperties: false,
+            properties: { content: { type: "string" } },
+            required: ["content"],
+          },
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a personal coding agent working inside one private fork. Return JSON with exactly one field named content containing the complete replacement for the requested file. Keep the existing product direction, do not add secrets or external network calls, and return no markdown fences.",
+            },
+            {
+              role: "user",
+              content: `PROJECT: ${state.room.name}\nFILE: ${activeSourcePath}\nREQUEST: ${agentInstruction.trim()}\n\nCURRENT FILE\n${editorValue}`,
+            },
+          ],
+        }),
+      });
+      const payload = (await response.json()) as {
+        error?: string;
+        message?: { content?: string };
+      };
+      if (!response.ok) throw new Error(payload.error ?? "The local model rejected the request.");
+      const parsed = JSON.parse(payload.message?.content ?? "{}") as { content?: unknown };
+      if (typeof parsed.content !== "string") {
+        throw new Error("The local model did not return a complete file replacement.");
+      }
+
+      const roomResponse = await fetch("/api/room", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "agent-file",
+          slug,
+          path: activeSourcePath,
+          content: parsed.content,
+          expectedRevision: agentBase.expectedRevision,
+          baseBuildId: agentBase.baseBuildId,
+          agentLabel: `Local · ${model}`,
+        }),
+      });
+      const nextState = await readResponse<RoomState>(roomResponse);
+      setState(nextState);
+      setSourceDrafts((current) => {
+        const next = { ...current };
+        delete next[activeSourcePath];
+        return next;
+      });
+      setAgentInstruction("");
+      setAgentOpen(false);
+      setActiveTab("diff");
+      setNotice(`${model} proposed ${activeSourcePath} · review the exact diff before backing`);
+    } catch (agentError) {
+      setError(
+        agentError instanceof Error
+          ? `${agentError.message} Ollama may need to allow this site's origin.`
+          : "The personal agent could not finish the file.",
+      );
+      setNotice("Nothing was staged · your current project is unchanged");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function updateSourceDraft(content: string) {
     if (!state || !visibleBuild) return;
     const sourceFile = getSourceFile(visibleBuild, activeSourcePath);
-    if (!sourceFile) return;
 
     setSourceDrafts((current) => {
       const existing = current[activeSourcePath] ?? {
-        content: sourceFile.content,
-        baseContent: sourceFile.content,
+        content: sourceFile?.content ?? "",
+        baseContent: sourceFile?.content ?? "",
         baseBuildId: visibleBuild.id,
         expectedRevision: state.room.revision,
       };
       const next = { ...current };
 
-      if (content === existing.baseContent) {
+      if (sourceFile && content === existing.baseContent) {
         delete next[activeSourcePath];
       } else {
         next[activeSourcePath] = { ...existing, content };
@@ -488,6 +693,54 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     }
   }
 
+  async function removeProjectFile() {
+    if (
+      !state ||
+      !visibleBuild ||
+      !activeSourceFile ||
+      activeSourcePath === "index.html" ||
+      activeSourcePath === "styles.css" ||
+      busy
+    ) {
+      return;
+    }
+    setBusy("delete-file");
+    setError(null);
+    setEditorStatus(null);
+    try {
+      const response = await fetch("/api/room", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "delete-file",
+          slug,
+          path: activeSourcePath,
+          expectedRevision: state.room.revision,
+          baseBuildId: visibleBuild.id,
+        }),
+      });
+      const payload = (await response.json()) as RoomState & { error?: string };
+      if (response.status === 409) {
+        setError(payload.error ?? "The room changed before this file could be removed.");
+        await loadRoom();
+        return;
+      }
+      if (!response.ok) throw new Error(payload.error ?? "The file could not be removed.");
+      setState(payload);
+      setSourceDrafts((current) => {
+        const next = { ...current };
+        delete next[activeSourcePath];
+        return next;
+      });
+      setActiveSourcePath("index.html");
+      setNotice(`${activeSourcePath} removal staged · the published project is still unchanged`);
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : "The file could not be removed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function reloadLatestSource() {
     setSourceDrafts((current) => {
       const next = { ...current };
@@ -500,6 +753,21 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   }
 
   const visibleBuild = state?.staged ?? state?.published;
+  const sourcePaths = Array.from(
+    new Set([
+      ...(visibleBuild?.files.map((file) => file.path) ?? []),
+      ...Object.keys(sourceDrafts),
+    ]),
+  ).sort((left, right) => {
+    const preferred = ["index.html", "styles.css", "src/app.js", "README.md"];
+    const leftIndex = preferred.indexOf(left);
+    const rightIndex = preferred.indexOf(right);
+    if (leftIndex >= 0 || rightIndex >= 0) {
+      return (leftIndex < 0 ? preferred.length : leftIndex) -
+        (rightIndex < 0 ? preferred.length : rightIndex);
+    }
+    return left.localeCompare(right);
+  });
   const activeSourceFile = getSourceFile(visibleBuild, activeSourcePath);
   const activeSourceDraft = sourceDrafts[activeSourcePath];
   const editorValue = activeSourceDraft?.content ?? activeSourceFile?.content ?? "";
@@ -516,7 +784,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     { length: Math.max(1, editorValue.split("\n").length) },
     (_, index) => index + 1,
   ).join("\n");
-  const diffByPath = useMemo(() => {
+  const diffByPath = (() => {
     const result = {} as Record<
       SourcePath,
       { rows: ReturnType<typeof buildDiffLines>; added: number; removed: number }
@@ -531,8 +799,8 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     }
 
     return result;
-  }, [state?.published, state?.staged]);
-  const activeDiff = diffByPath[activeDiffPath];
+  })();
+  const activeDiff = diffByPath[activeDiffPath] ?? { rows: [], added: 0, removed: 0 };
   const voterMembers = useMemo(
     () =>
       state?.members.filter((member) => state.votes.voterIds.includes(member.id)) ?? [],
@@ -609,6 +877,19 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                     ↖ parent · {state.room.parentRoom.name}
                   </Link>
                   <button
+                    className="branch-map__present"
+                    type="button"
+                    onClick={presentToParent}
+                    disabled={Boolean(busy) || !state.published || Boolean(state.staged)}
+                    title={state.staged ? "Ship the fork proposal before presenting it" : undefined}
+                  >
+                    {busy === "present-parent"
+                      ? "presenting…"
+                      : state.room.presentedAt
+                        ? "refresh presentation ◫"
+                        : "present fork ◫"}
+                  </button>
+                  <button
                     type="button"
                     onClick={mergeToParent}
                     disabled={Boolean(busy) || !state.published || Boolean(state.staged)}
@@ -630,13 +911,13 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                       >
                         <i />
                         <strong>{branch.ownerName}&apos;s fork</strong>
-                        <small>open →</small>
+                        <small>{branch.presentedAt ? "presenting ◫" : "open →"}</small>
                       </Link>
                     ) : (
                       <div className="branch-map__private" title={branch.name} key={branch.slug}>
                         <i />
                         <strong>{branch.ownerName}&apos;s fork</strong>
-                        <small>working</small>
+                        <small>{branch.presentedAt ? "presenting ◫" : "working"}</small>
                       </div>
                     ),
                   )}
@@ -909,32 +1190,43 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
           </div>
 
           <div className="build-tabs" role="tablist" aria-label="Build views">
-            {(["preview", "code", "diff", "activity"] as const).map((tabName) => (
+            {(["preview", "code", "diff", "showcase", "activity"] as const).map((tabName) => (
               <button
                 type="button"
                 role="tab"
                 aria-selected={activeTab === tabName}
                 className={activeTab === tabName ? "is-active" : ""}
                 onClick={() => setActiveTab(tabName)}
-                disabled={tabName === "diff" && !state?.staged}
-                title={tabName === "diff" && !state?.staged ? "Stage a source patch to compare it" : undefined}
+                disabled={
+                  (tabName === "diff" && !state?.staged) ||
+                  (tabName === "showcase" && !state?.showcase.length)
+                }
+                title={
+                  tabName === "diff" && !state?.staged
+                    ? "Stage a source patch to compare it"
+                    : tabName === "showcase" && !state?.showcase.length
+                      ? "A fork owner must present a published branch first"
+                      : undefined
+                }
                 key={tabName}
               >
                 {tabName}
               </button>
             ))}
-            <span className="sandbox-label"><i /> scriptless sandbox</span>
+            <span className="sandbox-label"><i /> isolated JS · no network</span>
           </div>
 
           <div
             className={`build-stage ${activeTab === "code" || activeTab === "diff" ? "build-stage--ide" : ""}`}
           >
-            {state?.staged && activeTab !== "activity" && (
+            {state?.staged && activeTab !== "activity" && activeTab !== "showcase" && (
               <div className="staged-banner">
                 <span>{proposalSourceLabel(state.staged.sourceKind)} · STAGED, NOT PUBLISHED</span>
                 <span>
                   {state.staged.sourceKind === "manual"
                     ? "room source edit"
+                    : state.staged.sourceKind === "personal-agent"
+                      ? state.staged.agentLabel ?? "personal agent"
                     : state.staged.sourceKind === "fork-merge"
                       ? "converged fork snapshot"
                       : `${state.staged.sourceMessageIds.length} source messages`}
@@ -947,7 +1239,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 className="artifact-frame"
                 title={`${visibleBuild.name} interactive preview`}
                 srcDoc={visibleBuild.html}
-                sandbox=""
+                sandbox="allow-scripts"
                 referrerPolicy="no-referrer"
               />
             )}
@@ -956,27 +1248,54 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 <aside className="source-files" aria-label="Artifact source files">
                   <div className="source-files__heading">
                     <span>SOURCE</span>
-                    <small>2 files</small>
+                    <small>{sourcePaths.length} files</small>
+                    <button
+                      type="button"
+                      onClick={() => setNewFileOpen((current) => !current)}
+                      aria-expanded={newFileOpen}
+                    >
+                      + file
+                    </button>
                   </div>
+                  {newFileOpen && (
+                    <form className="new-file-form" onSubmit={createProjectFile}>
+                      <label htmlFor="new-file-path">Relative file path</label>
+                      <input
+                        id="new-file-path"
+                        value={newFilePath}
+                        onChange={(event) => setNewFilePath(event.target.value)}
+                        placeholder="components/card.js"
+                        maxLength={120}
+                        autoFocus
+                      />
+                      <button type="submit" disabled={!newFilePath.trim()}>
+                        create →
+                      </button>
+                    </form>
+                  )}
                   {sourcePaths.map((path) => {
                     const file = getSourceFile(visibleBuild, path);
                     const fileDraft = sourceDrafts[path];
+                    const language = file?.language ?? languageForPath(path);
                     const isDirty = Boolean(fileDraft && fileDraft.content !== fileDraft.baseContent);
                     return (
                       <button
                         className={`${activeSourcePath === path ? "is-active" : ""} ${isDirty ? "is-dirty" : ""}`}
                         type="button"
                         onClick={() => setActiveSourcePath(path)}
-                        disabled={!file}
                         aria-current={activeSourcePath === path ? "page" : undefined}
                         key={path}
                       >
-                        <span className={`file-glyph file-glyph--${file?.language ?? "html"}`}>
-                          {file?.language === "css" ? "#" : "<>"}
+                        <span className={`file-glyph file-glyph--${language}`}>
+                          {fileGlyph(language)}
                         </span>
                         <span>
                           <strong>{path}</strong>
-                          <small>{file ? `${file.byteCount.toLocaleString()} bytes` : "unavailable"}</small>
+                          <small>
+                            {file
+                              ? `${file.byteCount.toLocaleString()} bytes`
+                              : `${utf8ByteCount(fileDraft?.content ?? "").toLocaleString()} bytes · new`}
+                          </small>
                         </span>
                         {isDirty && <i aria-label="Unsaved local changes" />}
                       </button>
@@ -996,6 +1315,27 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                       {editorIsStale && <span className="source-state source-state--stale">room moved</span>}
                       {editorIsDirty && <span className="source-state source-state--dirty">local draft</span>}
                       <span>r{activeSourceDraft?.expectedRevision ?? state?.room.revision ?? 0}</span>
+                      <button
+                        type="button"
+                        className="personal-agent-toggle"
+                        onClick={() => setAgentOpen((current) => !current)}
+                        aria-expanded={agentOpen}
+                      >
+                        my AI ✳
+                      </button>
+                      {activeSourceFile &&
+                        activeSourcePath !== "index.html" &&
+                        activeSourcePath !== "styles.css" && (
+                          <button
+                            type="button"
+                            className="source-remove-button"
+                            onClick={() => void removeProjectFile()}
+                            disabled={Boolean(busy)}
+                            title={`Stage removal of ${activeSourcePath}`}
+                          >
+                            remove
+                          </button>
+                        )}
                     </div>
                   </div>
 
@@ -1012,6 +1352,51 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                         </button>
                       )}
                     </div>
+                  )}
+
+                  {agentOpen && (
+                    <form className="personal-agent" onSubmit={runPersonalAgent}>
+                      <div className="personal-agent__heading">
+                        <span>PERSONAL AGENT · RUNS ON YOUR DEVICE</span>
+                        <strong>Ask local Ollama to propose this file</strong>
+                      </div>
+                      <label>
+                        <span>Endpoint</span>
+                        <input
+                          value={agentEndpoint}
+                          onChange={(event) => setAgentEndpoint(event.target.value)}
+                          inputMode="url"
+                          placeholder="http://localhost:11434"
+                        />
+                      </label>
+                      <label>
+                        <span>Model</span>
+                        <input
+                          value={agentModel}
+                          onChange={(event) => setAgentModel(event.target.value)}
+                          placeholder="qwen3:4b"
+                        />
+                      </label>
+                      <label className="personal-agent__request">
+                        <span>What should your agent do?</span>
+                        <textarea
+                          value={agentInstruction}
+                          onChange={(event) => setAgentInstruction(event.target.value)}
+                          placeholder={`Improve ${activeSourcePath} while preserving the room's direction…`}
+                          maxLength={1200}
+                          rows={3}
+                        />
+                      </label>
+                      <p>
+                        The request goes directly from this browser to your local model. Only its completed file proposal is sent to the room for review.
+                      </p>
+                      <button
+                        type="submit"
+                        disabled={!agentInstruction.trim() || !agentModel.trim() || Boolean(busy)}
+                      >
+                        {busy === "personal-agent" ? "agent working…" : "propose with my AI →"}
+                      </button>
+                    </form>
                   )}
 
                   <label className="source-editor__input">
@@ -1129,6 +1514,63 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 )}
               </div>
             )}
+            {activeTab === "showcase" && state && (
+              <div className="showcase-workspace">
+                <div className="showcase-workspace__header">
+                  <div>
+                    <span>FORK SHOWCASE · SAME BRANCH POINT, DIFFERENT DIRECTIONS</span>
+                    <h3>Compare what the team built</h3>
+                  </div>
+                  <p>Each card is an immutable published build. Open a branch only when you belong to it.</p>
+                </div>
+                <div className="showcase-grid">
+                  {state.published && (
+                    <article className="showcase-card showcase-card--parent">
+                      <header>
+                        <div>
+                          <span>SHARED PARENT</span>
+                          <strong>{state.published.name}</strong>
+                        </div>
+                        <small>v{state.published.version}</small>
+                      </header>
+                      <iframe
+                        title={`${state.published.name} parent preview`}
+                        srcDoc={state.published.html}
+                        sandbox="allow-scripts"
+                        referrerPolicy="no-referrer"
+                      />
+                      <footer>Current unified build</footer>
+                    </article>
+                  )}
+                  {state.showcase.map((entry) => {
+                    const branch = state.branches.find((candidate) => candidate.slug === entry.slug);
+                    return (
+                      <article className="showcase-card" key={entry.slug}>
+                        <header>
+                          <div>
+                            <span>{entry.ownerName.toUpperCase()}&apos;S FORK</span>
+                            <strong>{entry.build.name}</strong>
+                          </div>
+                          <small>v{entry.build.version}</small>
+                        </header>
+                        <iframe
+                          title={`${entry.ownerName}'s fork preview`}
+                          srcDoc={entry.build.html}
+                          sandbox="allow-scripts"
+                          referrerPolicy="no-referrer"
+                        />
+                        <footer>
+                          <span>Presented {activityTime(entry.presentedAt)}</span>
+                          {branch?.role && (
+                            <Link href={`/?room=${encodeURIComponent(entry.slug)}`}>open branch →</Link>
+                          )}
+                        </footer>
+                      </article>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {activeTab === "activity" && (
               <div className="activity-list">
                 {state?.activity.map((activity) => (
@@ -1147,7 +1589,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 ))}
               </div>
             )}
-            {!visibleBuild && activeTab !== "activity" && activeTab !== "diff" && (
+            {!visibleBuild && activeTab !== "activity" && activeTab !== "diff" && activeTab !== "showcase" && (
               <div className="empty-build">The first published artifact will appear here.</div>
             )}
           </div>
@@ -1171,6 +1613,20 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               </p>
             </div>
             <div className="build-footer__actions">
+              {state?.room.parentRoom && (
+                <button
+                  type="button"
+                  onClick={presentToParent}
+                  disabled={!state.published || Boolean(busy) || Boolean(state.staged)}
+                  title={state.staged ? "Ship the staged proposal before presenting it" : undefined}
+                >
+                  {busy === "present-parent"
+                    ? "presenting…"
+                    : state.room.presentedAt
+                      ? "refresh showcase ◫"
+                      : "present fork ◫"}
+                </button>
+              )}
               {state?.room.parentRoom && (
                 <button
                   type="button"

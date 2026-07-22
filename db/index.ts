@@ -23,6 +23,7 @@ const schemaStatements = [
     generation_lease_id TEXT,
     generation_locked_until TEXT,
     last_generated_at TEXT,
+    presented_at TEXT,
     revision INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -52,6 +53,7 @@ const schemaStatements = [
     version INTEGER NOT NULL,
     status TEXT NOT NULL,
     source_kind TEXT NOT NULL DEFAULT 'legacy',
+    agent_label TEXT,
     name TEXT NOT NULL,
     proposal_title TEXT NOT NULL,
     rationale TEXT NOT NULL,
@@ -68,12 +70,14 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS builds_room_status_idx ON builds(room_id, status)`,
   `CREATE TABLE IF NOT EXISTS build_files (
     build_id TEXT NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
-    path TEXT NOT NULL CHECK(path IN ('index.html', 'styles.css')),
-    content TEXT NOT NULL,
-    language TEXT NOT NULL CHECK(
-      (path = 'index.html' AND language = 'html') OR
-      (path = 'styles.css' AND language = 'css')
+    path TEXT NOT NULL CHECK(
+      length(path) BETWEEN 1 AND 120 AND
+      path NOT LIKE '/%' AND
+      path NOT LIKE '%/' AND
+      path NOT LIKE '%//%'
     ),
+    content TEXT NOT NULL,
+    language TEXT NOT NULL CHECK(language IN ('html', 'css', 'javascript', 'json', 'markdown', 'text')),
     sha256 TEXT NOT NULL CHECK(
       length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'
     ),
@@ -95,6 +99,7 @@ const roomColumns = [
   ["generation_lease_id", "ALTER TABLE rooms ADD COLUMN generation_lease_id TEXT"],
   ["generation_locked_until", "ALTER TABLE rooms ADD COLUMN generation_locked_until TEXT"],
   ["last_generated_at", "ALTER TABLE rooms ADD COLUMN last_generated_at TEXT"],
+  ["presented_at", "ALTER TABLE rooms ADD COLUMN presented_at TEXT"],
   ["revision", "ALTER TABLE rooms ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"],
 ] as const;
 
@@ -106,6 +111,7 @@ const userColumns = [
 
 const buildColumns = [
   ["source_kind", "ALTER TABLE builds ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'legacy'"],
+  ["agent_label", "ALTER TABLE builds ADD COLUMN agent_label TEXT"],
 ] as const;
 
 let initialized = false;

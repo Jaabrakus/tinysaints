@@ -57,6 +57,7 @@ export function makeStarterArtifact(roomName: string) {
 </html>`;
 }
 
+const scriptNonce = "make-room-project";
 const securityMeta = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; img-src data:; font-src data:; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none'" /><meta name="referrer" content="no-referrer" />`;
 
 export function secureArtifactHtml(input: string) {
@@ -86,21 +87,108 @@ export type GeneratedSource = {
   css: string;
 };
 
-export const artifactSourcePaths = ["index.html", "styles.css"] as const;
+export const artifactSourcePaths = [
+  "index.html",
+  "styles.css",
+  "src/app.js",
+  "README.md",
+] as const;
 
-export type ArtifactSourcePath = (typeof artifactSourcePaths)[number];
+export type ArtifactSourcePath = string;
+export type ArtifactLanguage =
+  | "html"
+  | "css"
+  | "javascript"
+  | "json"
+  | "markdown"
+  | "text";
 
 export type ArtifactSourceFile = {
   path: ArtifactSourcePath;
   content: string;
-  language: "html" | "css";
+  language: ArtifactLanguage;
 };
 
+export const MAX_PROJECT_FILES = 40;
+export const MAX_PROJECT_FILE_BYTES = 65_536;
+export const MAX_PROJECT_BYTES = 524_288;
+
+export function inferArtifactLanguage(path: string): ArtifactLanguage {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
+  if (lower.endsWith(".css")) return "css";
+  if (lower.endsWith(".js") || lower.endsWith(".mjs")) return "javascript";
+  if (lower.endsWith(".json")) return "json";
+  if (lower.endsWith(".md") || lower.endsWith(".mdx")) return "markdown";
+  return "text";
+}
+
+export function validateArtifactPath(rawPath: string) {
+  const path = rawPath.trim();
+  if (
+    !path ||
+    path.length > 120 ||
+    path.startsWith("/") ||
+    path.endsWith("/") ||
+    path.includes("//") ||
+    !/^[A-Za-z0-9._/-]+$/.test(path) ||
+    path.split("/").some((part) => !part || part === "." || part === "..")
+  ) {
+    throw new Error(
+      "File paths may use letters, numbers, dots, dashes, underscores, and folders.",
+    );
+  }
+  return path;
+}
+
+export function validateArtifactFiles(
+  input: ReadonlyArray<
+    Pick<ArtifactSourceFile, "path" | "content"> &
+      Partial<Pick<ArtifactSourceFile, "language">>
+  >,
+) {
+  if (input.length < 2 || input.length > MAX_PROJECT_FILES) {
+    throw new Error(`A project must contain 2–${MAX_PROJECT_FILES} files.`);
+  }
+  const files: ArtifactSourceFile[] = [];
+  const paths = new Set<string>();
+  let totalBytes = 0;
+  for (const inputFile of input) {
+    const path = validateArtifactPath(inputFile.path);
+    if (paths.has(path)) throw new Error(`Duplicate source path: ${path}`);
+    paths.add(path);
+    if (typeof inputFile.content !== "string") {
+      throw new Error(`${path} must contain plain text.`);
+    }
+    const fileBytes = byteLength(inputFile.content);
+    if (fileBytes > MAX_PROJECT_FILE_BYTES) {
+      throw new Error(`${path} exceeded the 64 KB project-file limit.`);
+    }
+    totalBytes += fileBytes;
+    if (totalBytes > MAX_PROJECT_BYTES) {
+      throw new Error("The project exceeded the 512 KB source limit.");
+    }
+    const language = inferArtifactLanguage(path);
+    if (inputFile.language && inputFile.language !== language) {
+      throw new Error(`${path} has invalid language metadata.`);
+    }
+    files.push({ path, content: inputFile.content, language });
+  }
+  if (!paths.has("index.html") || !paths.has("styles.css")) {
+    throw new Error("A project must contain index.html and styles.css.");
+  }
+  return files.sort((left, right) => left.path.localeCompare(right.path));
+}
+
 export function extractArtifactSource(input: string): GeneratedSource {
-  const body = input.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)?.[1];
-  if (body === undefined) {
+  const bodySource = input.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)?.[1];
+  if (bodySource === undefined) {
     throw new Error("The stored artifact could not be opened as source files.");
   }
+  const body = bodySource.replace(
+    /<script\b[^>]*\bdata-make-room-entry\b[^>]*>[\s\S]*?<\/script>/gi,
+    "",
+  );
 
   const styles: string[] = [];
   for (const match of input.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)) {
@@ -119,20 +207,29 @@ export function sourceFilesFromGenerated(
   ];
 }
 
+export function makeStarterProject(roomName: string): ArtifactSourceFile[] {
+  return validateArtifactFiles([
+    ...sourceFilesFromGenerated(makeStarterSource(roomName)),
+    {
+      path: "src/app.js",
+      language: "javascript",
+      content: `const status = document.querySelector("#result");\n\ndocument.addEventListener("change", (event) => {\n  const choice = event.target;\n  if (!(choice instanceof HTMLInputElement) || !status) return;\n  status.dataset.choice = choice.id;\n});`,
+    },
+    {
+      path: "README.md",
+      language: "markdown",
+      content: `# ${roomName}\n\nA shared make/room project. Edit a file, review the staged diff, then ship it together.`,
+    },
+  ]);
+}
+
 export function generatedSourceFromFiles(
   files: ReadonlyArray<Pick<ArtifactSourceFile, "path" | "content">>,
 ): GeneratedSource {
-  if (files.length !== artifactSourcePaths.length) {
-    throw new Error("An artifact must contain index.html and styles.css.");
-  }
-
-  const byPath = new Map<ArtifactSourcePath, string>();
+  const byPath = new Map<string, string>();
   for (const file of files) {
-    if (!artifactSourcePaths.includes(file.path)) {
-      throw new Error("That source path is not part of this artifact.");
-    }
     if (byPath.has(file.path)) {
-      throw new Error("An artifact cannot contain duplicate source paths.");
+      throw new Error("A project cannot contain duplicate source paths.");
     }
     byPath.set(file.path, file.content);
   }
@@ -184,8 +281,32 @@ export function assembleGeneratedArtifact(source: GeneratedSource, title: string
 }
 
 export function assembleArtifactFiles(
-  files: ReadonlyArray<Pick<ArtifactSourceFile, "path" | "content">>,
+  inputFiles: ReadonlyArray<
+    Pick<ArtifactSourceFile, "path" | "content"> &
+      Partial<Pick<ArtifactSourceFile, "language">>
+  >,
   title: string,
 ) {
-  return assembleGeneratedArtifact(generatedSourceFromFiles(files), title);
+  const files = validateArtifactFiles(inputFiles);
+  const source = generatedSourceFromFiles(files);
+  const base = assembleGeneratedArtifact(source, title);
+  const javascript =
+    files.find((file) => file.path === "src/app.js")?.content ??
+    files.find((file) => file.path === "app.js")?.content ??
+    "";
+  if (!javascript.trim()) return base;
+  const forbiddenJavascript =
+    /\b(?:eval|Function|WebAssembly|Worker|SharedWorker|importScripts)\b|\b(?:window|self|globalThis)\s*\.\s*(?:open|parent|top|opener)\b|\bdocument\s*\.\s*cookie\b|\b(?:localStorage|sessionStorage|indexedDB)\b/i;
+  if (forbiddenJavascript.test(javascript)) {
+    throw new Error("Project JavaScript requested a capability the preview does not allow.");
+  }
+  const safeJavascript = javascript.replace(/<\/script/gi, "<\\/script");
+  const scriptEnabledBase = base.replace(
+    "script-src 'none'",
+    `script-src 'nonce-${scriptNonce}'; child-src 'none'; worker-src 'none'`,
+  );
+  return scriptEnabledBase.replace(
+    "</body>",
+    `<script nonce="${scriptNonce}" data-make-room-entry>${safeJavascript}</script></body>`,
+  );
 }
