@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0a0c09" />
+    <title>Torch — Carry the Fire Together</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="game-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand__mark">✳</span>
+          <div>
+            <span class="eyebrow">MAKE/ROOM GAME 001</span>
+            <h1>TORCH</h1>
+          </div>
+        </div>
+        <p class="mission">Carry one living flame through the dark. Move carefully. Stay together.</p>
+      </header>
+
+      <section class="hud" aria-label="Game status">
+        <div class="meter-card">
+          <div class="meter-card__label"><span>FLAME</span><strong id="flameValue">100%</strong></div>
+          <div class="flame-meter" aria-hidden="true"><i id="flameBar"></i></div>
+        </div>
+        <div class="stat"><span>TINDER</span><strong id="tinderValue">0</strong></div>
+        <div class="stat"><span>DISTANCE</span><strong id="distanceValue">0%</strong></div>
+        <div class="status" id="statusText" role="status">The fire is waiting.</div>
+      </section>
+
+      <section class="game-frame" id="gameFrame">
+        <canvas
+          id="game"
+          width="1200"
+          height="720"
+          tabindex="0"
+          aria-label="Two-player cooperative game. Carry the torch from the first fire to the distant bonfire."
+        ></canvas>
+        <div class="start-card" id="startCard">
+          <span>LOCAL CO-OP PROTOTYPE</span>
+          <h2>The flame belongs to both of you.</h2>
+          <p>The carrier must move slowly. The companion scouts for tinder, stays close, and takes the torch when needed.</p>
+          <button id="startButton" type="button">light the torch →</button>
+        </div>
+      </section>
+
+      <footer class="controls">
+        <div class="control-group control-group--lime">
+          <span>PLAYER ONE</span>
+          <strong>WASD</strong>
+          <small>Left Shift to sprint</small>
+        </div>
+        <div class="control-group control-group--violet">
+          <span>PLAYER TWO</span>
+          <strong>ARROW KEYS</strong>
+          <small>Slash to sprint</small>
+        </div>
+        <div class="control-group">
+          <span>SHARED ACTIONS</span>
+          <strong>Q PASS · E USE TINDER</strong>
+          <small>Stay close to shelter the flame</small>
+        </div>
+        <button class="restart" id="restartButton" type="button">restart run</button>
+      </footer>
+
+      <div class="touch-controls" aria-label="Touch controls for player one">
+        <button type="button" data-touch="KeyA" aria-label="Move left">←</button>
+        <button type="button" data-touch="KeyW" aria-label="Move up">↑</button>
+        <button type="button" data-touch="KeyS" aria-label="Move down">↓</button>
+        <button type="button" data-touch="KeyD" aria-label="Move right">→</button>
+        <button type="button" data-tap="pass">pass</button>
+        <button type="button" data-tap="fuel">fuel</button>
+      </div>
+    </main>
+    <script src="game.js" defer></script>
+  </body>
+</html>
