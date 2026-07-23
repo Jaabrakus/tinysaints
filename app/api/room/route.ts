@@ -1,5 +1,6 @@
 import {
   addMessage,
+  addContextCapsule,
   createAgentToken,
   createRoomInvite,
   createRoom,
@@ -78,6 +79,9 @@ export async function POST(request: Request) {
       agentLabel?: string;
       tokenId?: string;
       changes?: Array<{ path: string; content: string | null }>;
+      files?: string[];
+      summary?: string;
+      recommendation?: string;
     };
     const action = payload.action ?? "";
     const slug = payload.slug ?? "tiny-plans";
@@ -99,6 +103,15 @@ export async function POST(request: Request) {
     }
     if (action === "message") {
       await addMessage(slug, identity, payload.body ?? "");
+      return Response.json(await getRoomState(slug, identity));
+    }
+    if (action === "context") {
+      await addContextCapsule(slug, identity, {
+        agentLabel: payload.agentLabel,
+        files: payload.files,
+        summary: payload.summary,
+        recommendation: payload.recommendation,
+      });
       return Response.json(await getRoomState(slug, identity));
     }
     if (action === "edit-file" || action === "agent-file" || action === "delete-file") {

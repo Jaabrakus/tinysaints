@@ -239,6 +239,20 @@ function playableUrl(slug: string, build: Build) {
   return `/api/play?room=${encodeURIComponent(slug)}&build=${encodeURIComponent(build.id)}`;
 }
 
+function parseContextCapsule(body: string) {
+  if (!body.startsWith("[CONTEXT CAPSULE]\n")) return null;
+  const fields = Object.fromEntries(body.split("\n").slice(1).map((line) => {
+    const divider = line.indexOf(":");
+    return divider < 0 ? [line, ""] : [line.slice(0, divider), line.slice(divider + 1).trim()];
+  }));
+  return {
+    source: fields.SOURCE || "Shared context",
+    files: fields.FILES || "whole project",
+    found: fields.FOUND || "",
+    next: fields.NEXT || "Compare this with the room before deciding.",
+  };
+}
+
 function laneForPath(path: string, kind: ProjectKind) {
   if (kind === "game") {
     if (path.startsWith("assets/")) return "art";
@@ -324,6 +338,11 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [state, setState] = useState<RoomState | null>(null);
   const slug = state?.room.slug ?? initialSlug;
   const [draft, setDraft] = useState("");
+  const [contextOpen, setContextOpen] = useState(false);
+  const [contextSource, setContextSource] = useState("My local AI");
+  const [contextFiles, setContextFiles] = useState("");
+  const [contextSummary, setContextSummary] = useState("");
+  const [contextNext, setContextNext] = useState("");
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("code");
   const [activeSourcePath, setActiveSourcePath] = useState<SourcePath>("index.html");
   const [activeDiffPath, setActiveDiffPath] = useState<SourcePath>("index.html");
@@ -466,6 +485,36 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       setNotice("Message saved · ready for collective synthesis");
     } catch (messageError) {
       setError(messageError instanceof Error ? messageError.message : "The message could not send.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitContext(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!contextSummary.trim() || busy) return;
+    setBusy("context");
+    setError(null);
+    try {
+      const response = await fetch("/api/room", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "context",
+          slug,
+          agentLabel: contextSource.trim(),
+          files: contextFiles.split(",").map((path) => path.trim()).filter(Boolean),
+          summary: contextSummary.trim(),
+          recommendation: contextNext.trim(),
+        }),
+      });
+      setState(await readResponse<RoomState>(response));
+      setContextSummary("");
+      setContextNext("");
+      setContextOpen(false);
+      setNotice("Context shared · the room and convergence agents can use it");
+    } catch (contextError) {
+      setError(contextError instanceof Error ? contextError.message : "The context could not be shared.");
     } finally {
       setBusy(null);
     }
@@ -1583,18 +1632,26 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 <p>Start with a need, a constraint, or the smallest thing worth making.</p>
               </div>
             )}
-            {state?.messages.map((message) => (
-              <article className="message" key={message.id}>
+            {state?.messages.map((message) => {
+              const capsule = parseContextCapsule(message.body);
+              return <article className={`message ${capsule ? "message--context" : ""}`} key={message.id}>
                 <Avatar id={message.authorId} name={message.authorName} />
                 <div className="message__body">
                   <div className="message__meta">
                     <strong>{message.authorName}</strong>
                     <time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time>
                   </div>
-                  <p>{message.body}</p>
+                  {capsule ? (
+                    <section className="context-capsule">
+                      <header><span>CONTEXT CAPSULE</span><strong>{capsule.source}</strong></header>
+                      <p>{capsule.found}</p>
+                      <div><span>FILES</span><code>{capsule.files}</code></div>
+                      <div><span>NEXT</span><p>{capsule.next}</p></div>
+                    </section>
+                  ) : <p>{message.body}</p>}
                 </div>
-              </article>
-            ))}
+              </article>;
+            })}
           </div>
 
           {state?.staged && (
@@ -1672,14 +1729,30 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
             )}
             <div className="synthesis-line">
               <span>{notice}</span>
-              <button
-                type="button"
-                onClick={synthesizeThread}
-                disabled={Boolean(busy) || !state?.model.configured || !state.messages.length}
-              >
-                {busy === "synthesize" ? "synthesizing patch…" : "synthesize patch ✳"}
-              </button>
+              <div>
+                <button type="button" className={contextOpen ? "is-active" : ""} onClick={() => setContextOpen((value) => !value)}>
+                  share AI context +
+                </button>
+                <button
+                  type="button"
+                  onClick={synthesizeThread}
+                  disabled={Boolean(busy) || !state?.model.configured || !state.messages.length}
+                >
+                  {busy === "synthesize" ? "synthesizing patch…" : "synthesize patch ✳"}
+                </button>
+              </div>
             </div>
+            {contextOpen && (
+              <form className="context-composer" onSubmit={submitContext}>
+                <div className="context-composer__top">
+                  <label><span>FROM</span><input value={contextSource} onChange={(event) => setContextSource(event.target.value)} maxLength={80} placeholder="My local AI" /></label>
+                  <label><span>FILES</span><input value={contextFiles} onChange={(event) => setContextFiles(event.target.value)} maxLength={500} placeholder="src/player.js, world/level.json" /></label>
+                </div>
+                <label><span>WHAT IT FOUND</span><textarea value={contextSummary} onChange={(event) => setContextSummary(event.target.value)} maxLength={1200} rows={3} placeholder="Paste the useful conclusion—not the whole chat history…" /></label>
+                <label><span>RECOMMENDED NEXT MOVE</span><input value={contextNext} onChange={(event) => setContextNext(event.target.value)} maxLength={600} placeholder="What should the group compare, test, or change?" /></label>
+                <div><p>Small context travels better than a giant prompt.</p><button type="submit" disabled={!contextSummary.trim() || Boolean(busy)}>{busy === "context" ? "sharing…" : "add to room →"}</button></div>
+              </form>
+            )}
             <form className="composer" onSubmit={submitMessage}>
               <label htmlFor="room-message">Add to the room</label>
               <textarea

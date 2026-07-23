@@ -965,6 +965,36 @@ textarea:focus-visible {
   white-space: pre-wrap;
 }
 
+.message--context {
+  border-bottom-color: rgb(157 140 255 / 0.18);
+}
+
+.context-capsule {
+  display: grid;
+  gap: 9px;
+  margin-top: 7px;
+  padding: 11px 12px;
+  border: 1px solid rgb(157 140 255 / 0.28);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgb(157 140 255 / 0.09), rgb(202 255 69 / 0.025));
+}
+
+.context-capsule header,
+.context-capsule > div {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.context-capsule header { justify-content: space-between; }
+.context-capsule header span,
+.context-capsule > div > span { color: #9d8cff; font: 650 7px var(--font-code); letter-spacing: .08em; }
+.context-capsule header strong { color: #d0caff; font: 560 9px var(--font-code); }
+.context-capsule > p { margin: 0; color: #d0d2ca; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+.context-capsule > div > span { width: 34px; flex: 0 0 auto; color: #696c64; }
+.context-capsule code,
+.context-capsule > div p { margin: 0; color: #aeb1a8; font: 8px/1.45 var(--font-code); overflow-wrap: anywhere; }
+
 .empty-room {
   display: grid;
   margin: auto;
@@ -1148,6 +1178,29 @@ textarea:focus-visible {
 .synthesis-line button:hover {
   color: #dcff81;
 }
+
+.synthesis-line > div { display: flex; align-items: center; gap: 14px; }
+.synthesis-line button.is-active { color: #b8abff; }
+
+.context-composer {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgb(157 140 255 / 0.28);
+  border-radius: 10px;
+  background: #151613;
+}
+
+.context-composer__top { display: grid; grid-template-columns: minmax(120px, .7fr) minmax(180px, 1.3fr); gap: 8px; }
+.context-composer label { display: grid; gap: 4px; }
+.context-composer label span { color: #777a72; font: 650 7px var(--font-code); letter-spacing: .08em; }
+.context-composer input,
+.context-composer textarea { width: 100%; resize: vertical; border: 1px solid #30332c; border-radius: 6px; outline: 0; background: #10110e; color: #d2d4cc; padding: 7px 8px; font: 10px/1.45 var(--font-code); }
+.context-composer input:focus,
+.context-composer textarea:focus { border-color: #7064bd; }
+.context-composer > div:last-child { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.context-composer > div:last-child p { margin: 0; color: var(--faint); font: 8px var(--font-code); }
+.context-composer > div:last-child button { min-height: 28px; padding: 0 10px; border: 1px solid rgb(157 140 255 / .45); border-radius: 6px; background: rgb(157 140 255 / .12); color: #c8c0ff; font: 600 8px var(--font-code); }
 
 .composer {
   display: grid;

@@ -1602,6 +1602,33 @@ export async function addMessage(
   ]);
 }
 
+export async function addContextCapsule(
+  slugValue: string,
+  identity: Identity,
+  input: { agentLabel?: string; files?: string[]; summary?: string; recommendation?: string },
+) {
+  const agentLabel = cleanText(input.agentLabel ?? "Human context", 80) || "Human context";
+  const files = (input.files ?? [])
+    .filter((path): path is string => typeof path === "string")
+    .map((path) => cleanText(path, 120))
+    .filter(Boolean)
+    .slice(0, 12);
+  const summary = cleanText(input.summary ?? "", 1200);
+  const recommendation = cleanText(input.recommendation ?? "", 600);
+  if (!summary) throw new RoomError("Add the useful context your teammate or AI found.");
+  await addMessage(
+    slugValue,
+    identity,
+    [
+      "[CONTEXT CAPSULE]",
+      `SOURCE: ${agentLabel}`,
+      `FILES: ${files.length ? files.join(", ") : "whole project"}`,
+      `FOUND: ${summary}`,
+      `NEXT: ${recommendation || "Compare this with the room before deciding."}`,
+    ].join("\n"),
+  );
+}
+
 export async function createRoom(
   identity: Identity,
   rawName: string,

@@ -1,5 +1,6 @@
 import {
   authenticateAgentToken,
+  addContextCapsule,
   getAgentConvergenceSnapshot,
   getAgentProjectSnapshot,
   RoomError,
@@ -16,6 +17,23 @@ type RpcRequest = {
 };
 
 const tools = [
+  {
+    name: "share_context",
+    title: "Share AI context with the room",
+    description: "Post a compact finding from this agent into the group thread without staging or publishing code.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        room: { type: "string" },
+        agentLabel: { type: "string" },
+        files: { type: "array", maxItems: 12, items: { type: "string" } },
+        summary: { type: "string" },
+        recommendation: { type: "string" },
+      },
+      required: ["room", "summary"],
+    },
+  },
   {
     name: "get_project",
     title: "Read Make Room project",
@@ -149,6 +167,18 @@ export async function POST(request: Request) {
       if (name === "get_convergence_context") {
         const snapshot = await getAgentConvergenceSnapshot(String(args.room ?? ""), identity);
         return result(rpc.id, { content: [{ type: "text", text: JSON.stringify(snapshot) }] });
+      }
+      if (name === "share_context") {
+        const room = String(args.room ?? "");
+        await addContextCapsule(room, identity, {
+          agentLabel: typeof args.agentLabel === "string" ? args.agentLabel : "Connected agent",
+          files: Array.isArray(args.files) ? args.files.map(String) : [],
+          summary: typeof args.summary === "string" ? args.summary : "",
+          recommendation: typeof args.recommendation === "string" ? args.recommendation : "",
+        });
+        return result(rpc.id, {
+          content: [{ type: "text", text: "Context shared with the room. No code was changed." }],
+        });
       }
       if (name === "submit_project_patch") {
         const room = String(args.room ?? "");
