@@ -67,6 +67,45 @@ const schemaStatements = [
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
   `CREATE INDEX IF NOT EXISTS messages_room_created_idx ON messages(room_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS contributions (
+    id TEXT PRIMARY KEY NOT NULL,
+    room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('context', 'patch', 'asset', 'test', 'fork')),
+    visibility TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private', 'shared', 'published')),
+    status TEXT NOT NULL DEFAULT 'inbox' CHECK(status IN ('inbox', 'shared', 'accepted', 'rejected', 'superseded', 'conflicted')),
+    provider_label TEXT NOT NULL DEFAULT 'Human',
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    recommendation TEXT NOT NULL DEFAULT '',
+    files_json TEXT NOT NULL DEFAULT '[]',
+    line_refs_json TEXT NOT NULL DEFAULT '[]',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    base_build_id TEXT,
+    parent_contribution_id TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    shared_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS contributions_room_visibility_idx ON contributions(room_id, visibility, created_at)`,
+  `CREATE INDEX IF NOT EXISTS contributions_owner_status_idx ON contributions(owner_id, status, created_at)`,
+  `CREATE TABLE IF NOT EXISTS contribution_reactions (
+    contribution_id TEXT NOT NULL REFERENCES contributions(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    reaction TEXT NOT NULL CHECK(reaction IN ('useful', 'test', 'implement', 'clarify')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(contribution_id, user_id, reaction)
+  )`,
+  `CREATE INDEX IF NOT EXISTS contribution_reactions_user_idx ON contribution_reactions(user_id)`,
+  `CREATE TABLE IF NOT EXISTS contribution_links (
+    source_id TEXT NOT NULL REFERENCES contributions(id) ON DELETE CASCADE,
+    target_id TEXT NOT NULL REFERENCES contributions(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL CHECK(relation IN ('supports', 'conflicts', 'supersedes', 'implements', 'tests')),
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(source_id, target_id, relation)
+  )`,
+  `CREATE INDEX IF NOT EXISTS contribution_links_target_idx ON contribution_links(target_id)`,
   `CREATE TABLE IF NOT EXISTS builds (
     id TEXT PRIMARY KEY NOT NULL,
     room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,

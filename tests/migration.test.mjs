@@ -173,6 +173,18 @@ test("upgrades the deployed schema with immutable source snapshots", async () =>
   ).run("8".repeat(64), "user-1");
   assert.equal(database.prepare("SELECT count(*) AS count FROM guest_sessions").get().count, 1);
 
+  database.exec(await migration("0007_contribution_protocol.sql"));
+  database.prepare(
+    "INSERT INTO contributions (id, room_id, owner_id, kind, provider_label, title, summary) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run("contribution-1", "room-1", "user-1", "context", "Local AI", "Finding", "Use a smaller collision box");
+  database.prepare(
+    "INSERT INTO contribution_reactions (contribution_id, user_id, reaction) VALUES (?, ?, ?)",
+  ).run("contribution-1", "user-1", "useful");
+  assert.equal(database.prepare("SELECT visibility FROM contributions WHERE id = ?").get("contribution-1").visibility, "private");
+  assert.throws(() => database.prepare(
+    "INSERT INTO contribution_reactions (contribution_id, user_id, reaction) VALUES (?, ?, ?)",
+  ).run("contribution-1", "user-1", "like"), /CHECK constraint failed/);
+
   database.prepare("DELETE FROM builds WHERE id = ?").run("build-1");
   assert.equal(
     database.prepare("SELECT count(*) AS count FROM build_files").get().count,

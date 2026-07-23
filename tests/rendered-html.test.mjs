@@ -7,7 +7,7 @@ async function source(path) {
 }
 
 test("supports guest identity and drives the product from persisted room state", async () => {
-  const [page, guestEntry, guestRoute, client, roomRoute, roomService, convergenceRoute, playRoute, presenceRoute, projectAgentRoute, publicPlayRoute] = await Promise.all([
+  const [page, guestEntry, guestRoute, client, roomRoute, roomService, convergenceRoute, playRoute, presenceRoute, projectAgentRoute, publicPlayRoute, contributionRoute] = await Promise.all([
     source("../app/page.tsx"),
     source("../app/GuestEntry.tsx"),
     source("../app/api/guest/route.ts"),
@@ -19,6 +19,7 @@ test("supports guest identity and drives the product from persisted room state",
     source("../app/api/presence/route.ts"),
     source("../app/api/project-agent/route.ts"),
     source("../app/api/public-play/route.ts"),
+    source("../app/api/contributions/route.ts"),
   ]);
 
   assert.doesNotMatch(page, /requireChatGPTUser/);
@@ -89,6 +90,10 @@ test("supports guest identity and drives the product from persisted room state",
   assert.match(publicPlayRoute, /getPublicPlaytestSnapshot/);
   assert.match(publicPlayRoute, /connect-src 'none'/);
   assert.match(client, /create 14-day link/);
+  assert.match(client, /PERSONAL AI INBOX/);
+  assert.match(client, /save privately/);
+  assert.match(contributionRoute, /createContribution/);
+  assert.match(contributionRoute, /toggleContributionReaction/);
   assert.doesNotMatch(client, /const\s+(messages|rooms|members)\s*=\s*\[/);
 });
 
@@ -114,7 +119,7 @@ test("uses canonical server context and fails honestly without Kimi", async () =
 });
 
 test("keeps secrets server-side and generated code inside an opaque sandbox", async () => {
-  const [client, artifact, hosting, migration, sourceMigration, workspaceMigration, agentMigration, assetMigration, collaborationMigration, guestMigration, agentRoute, assetRoute, mcpRoute, notices] = await Promise.all([
+  const [client, artifact, hosting, migration, sourceMigration, workspaceMigration, agentMigration, assetMigration, collaborationMigration, guestMigration, contributionMigration, agentRoute, assetRoute, mcpRoute, notices] = await Promise.all([
     source("../app/RoomClient.tsx"),
     source("../lib/starter-artifact.ts"),
     source("../.openai/hosting.json"),
@@ -125,6 +130,7 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
     source("../drizzle/0004_flat_clea.sql"),
     source("../drizzle/0005_live_collaboration.sql"),
     source("../drizzle/0006_guest_sessions.sql"),
+    source("../drizzle/0007_contribution_protocol.sql"),
     source("../app/api/agent/route.ts"),
     source("../app/api/assets/route.ts"),
     source("../app/api/mcp/route.ts"),
@@ -157,6 +163,8 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
   assert.match(collaborationMigration, /CREATE TABLE `playtest_links`/);
   assert.match(collaborationMigration, /CREATE TABLE `playtest_feedback`/);
   assert.match(guestMigration, /CREATE TABLE `guest_sessions`/);
+  assert.match(contributionMigration, /CREATE TABLE `contributions`/);
+  assert.match(contributionMigration, /CREATE TABLE `contribution_reactions`/);
   assert.match(assetRoute, /env\.UPLOADS/);
   assert.match(assetRoute, /5 \* 1024 \* 1024/);
   assert.match(assetRoute, /getProjectAssetRecord/);
@@ -165,6 +173,7 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
   assert.match(mcpRoute, /submit_project_patch/);
   assert.match(mcpRoute, /get_convergence_context/);
   assert.match(mcpRoute, /submit_convergence_patch/);
+  assert.match(mcpRoute, /share_context/);
   assert.doesNotMatch(client, /OPENAI_API_KEY|ANTHROPIC_API_KEY|VENICE_API_KEY/);
   assert.match(notices, /Copyright \(c\) 2026 Moonshot AI/);
   assert.match(notices, /MIT License/);

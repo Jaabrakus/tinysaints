@@ -140,6 +140,25 @@ type EditorStatus = {
 
 type RuntimeMessage = { level: "ready" | "log" | "warn" | "error"; text: string };
 
+type Contribution = {
+  id: string;
+  ownerId: string;
+  ownerName: string;
+  kind: "context" | "patch" | "asset" | "test" | "fork";
+  visibility: "private" | "shared" | "published";
+  status: string;
+  providerLabel: string;
+  title: string;
+  summary: string;
+  recommendation: string;
+  files: string[];
+  lineRefs: Array<{ path: string; start: number; end: number }>;
+  mine: boolean;
+  reactions: Array<{ userId: string; reaction: "useful" | "test" | "implement" | "clarify" }>;
+  links: Array<{ sourceId: string; targetId: string; relation: string }>;
+  createdAt: string;
+};
+
 type LiveEditorState = {
   conflict: boolean;
   draft: { content: string; revision: number; baseBuildId: string; updatedBy: string } | null;
@@ -343,6 +362,8 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [contextFiles, setContextFiles] = useState("");
   const [contextSummary, setContextSummary] = useState("");
   const [contextNext, setContextNext] = useState("");
+  const [contributions, setContributions] = useState<Contribution[]>([]);
+  const [contributionSearch, setContributionSearch] = useState("");
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("code");
   const [activeSourcePath, setActiveSourcePath] = useState<SourcePath>("index.html");
   const [activeDiffPath, setActiveDiffPath] = useState<SourcePath>("index.html");
@@ -496,29 +517,62 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     setBusy("context");
     setError(null);
     try {
-      const response = await fetch("/api/room", {
+      const response = await fetch("/api/contributions", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          action: "context",
-          slug,
-          agentLabel: contextSource.trim(),
+          action: "create",
+          room: slug,
+          kind: "context",
+          providerLabel: contextSource.trim(),
+          title: `${contextSource.trim() || "AI"} finding`,
           files: contextFiles.split(",").map((path) => path.trim()).filter(Boolean),
           summary: contextSummary.trim(),
           recommendation: contextNext.trim(),
+          baseBuildId: visibleBuild?.id,
+          share: false,
         }),
       });
-      setState(await readResponse<RoomState>(response));
+      const result = await readResponse<{ contributions: Contribution[] }>(response);
+      setContributions(result.contributions);
       setContextSummary("");
       setContextNext("");
-      setContextOpen(false);
-      setNotice("Context shared · the room and convergence agents can use it");
+      setNotice("Saved privately · share it when you want the room to use it");
     } catch (contextError) {
       setError(contextError instanceof Error ? contextError.message : "The context could not be shared.");
     } finally {
       setBusy(null);
     }
   }
+
+  async function loadContributions(search = contributionSearch) {
+    if (!slug) return;
+    const response = await fetch(`/api/contributions?room=${encodeURIComponent(slug)}&q=${encodeURIComponent(search)}`, { cache: "no-store" });
+    setContributions(await readResponse<Contribution[]>(response));
+  }
+
+  async function contributionAction(action: "share" | "react", id: string, reaction?: string) {
+    if (busy) return;
+    setBusy(`contribution-${action}`);
+    setError(null);
+    try {
+      const response = await fetch("/api/contributions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, room: slug, id, reaction }),
+      });
+      setContributions(await readResponse<Contribution[]>(response));
+      setNotice(action === "share" ? "Contribution shared with the room" : "Reaction updated");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "The contribution could not update.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  useEffect(() => {
+    if (contextOpen && slug) void loadContributions("");
+  }, [contextOpen, slug]);
 
   async function synthesizeThread() {
     if (!state?.model.configured || busy) return;
@@ -1731,7 +1785,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               <span>{notice}</span>
               <div>
                 <button type="button" className={contextOpen ? "is-active" : ""} onClick={() => setContextOpen((value) => !value)}>
-                  share AI context +
+                  AI inbox {contributions.filter((item) => item.visibility === "private").length || ""} +
                 </button>
                 <button
                   type="button"
@@ -1743,15 +1797,44 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               </div>
             </div>
             {contextOpen && (
-              <form className="context-composer" onSubmit={submitContext}>
-                <div className="context-composer__top">
-                  <label><span>FROM</span><input value={contextSource} onChange={(event) => setContextSource(event.target.value)} maxLength={80} placeholder="My local AI" /></label>
-                  <label><span>FILES</span><input value={contextFiles} onChange={(event) => setContextFiles(event.target.value)} maxLength={500} placeholder="src/player.js, world/level.json" /></label>
+              <section className="contribution-inbox" aria-label="Personal AI contribution inbox">
+                <header>
+                  <div><span>PERSONAL AI INBOX</span><strong>Private until you share</strong></div>
+                  <form onSubmit={(event) => { event.preventDefault(); void loadContributions(); }}>
+                    <input value={contributionSearch} onChange={(event) => setContributionSearch(event.target.value)} placeholder="search room memory…" aria-label="Search contributions" />
+                    <button type="submit">find</button>
+                  </form>
+                </header>
+                <div className="contribution-inbox__list">
+                  {contributions.length === 0 && <p>No saved contributions yet. Bring back the useful part of any AI conversation.</p>}
+                  {contributions.map((item) => (
+                    <article className={item.visibility === "private" ? "is-private" : ""} key={item.id}>
+                      <div><span>{item.visibility === "private" ? "PRIVATE" : item.kind.toUpperCase()}</span><strong>{item.providerLabel}</strong><time>{timeLabel(item.createdAt)}</time></div>
+                      <h4>{item.title}</h4>
+                      <p>{item.summary}</p>
+                      {item.files.length > 0 && <code>{item.files.join(" · ")}</code>}
+                      <footer>
+                        {item.visibility === "private" ? (
+                          <button type="button" onClick={() => void contributionAction("share", item.id)} disabled={Boolean(busy)}>share with room →</button>
+                        ) : (["useful", "test", "implement", "clarify"] as const).map((reaction) => {
+                          const count = item.reactions.filter((entry) => entry.reaction === reaction).length;
+                          const mine = item.reactions.some((entry) => entry.reaction === reaction && entry.userId === state?.user.id);
+                          return <button className={mine ? "is-active" : ""} type="button" key={reaction} onClick={() => void contributionAction("react", item.id, reaction)}>{reaction}{count ? ` ${count}` : ""}</button>;
+                        })}
+                      </footer>
+                    </article>
+                  ))}
                 </div>
-                <label><span>WHAT IT FOUND</span><textarea value={contextSummary} onChange={(event) => setContextSummary(event.target.value)} maxLength={1200} rows={3} placeholder="Paste the useful conclusion—not the whole chat history…" /></label>
-                <label><span>RECOMMENDED NEXT MOVE</span><input value={contextNext} onChange={(event) => setContextNext(event.target.value)} maxLength={600} placeholder="What should the group compare, test, or change?" /></label>
-                <div><p>Small context travels better than a giant prompt.</p><button type="submit" disabled={!contextSummary.trim() || Boolean(busy)}>{busy === "context" ? "sharing…" : "add to room →"}</button></div>
-              </form>
+                <form className="context-composer" onSubmit={submitContext}>
+                  <div className="context-composer__top">
+                    <label><span>FROM</span><input value={contextSource} onChange={(event) => setContextSource(event.target.value)} maxLength={80} placeholder="My local AI" /></label>
+                    <label><span>FILES</span><input value={contextFiles} onChange={(event) => setContextFiles(event.target.value)} maxLength={500} placeholder="src/player.js, world/level.json" /></label>
+                  </div>
+                  <label><span>WHAT IT FOUND</span><textarea value={contextSummary} onChange={(event) => setContextSummary(event.target.value)} maxLength={1200} rows={3} placeholder="Paste the useful conclusion—not the whole chat history…" /></label>
+                  <label><span>RECOMMENDED NEXT MOVE</span><input value={contextNext} onChange={(event) => setContextNext(event.target.value)} maxLength={600} placeholder="What should the group compare, test, or change?" /></label>
+                  <div><p>Save privately first. You decide what enters the room.</p><button type="submit" disabled={!contextSummary.trim() || Boolean(busy)}>{busy === "context" ? "saving…" : "save privately →"}</button></div>
+                </form>
+              </section>
             )}
             <form className="composer" onSubmit={submitMessage}>
               <label htmlFor="room-message">Add to the room</label>

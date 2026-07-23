@@ -6,6 +6,9 @@ import {
   agentTokens,
   buildFiles,
   builds,
+  contributionLinks,
+  contributionReactions,
+  contributions,
   editorPresence,
   fileLeases,
   guestSessions,
@@ -1627,6 +1630,134 @@ export async function addContextCapsule(
       `NEXT: ${recommendation || "Compare this with the room before deciding."}`,
     ].join("\n"),
   );
+}
+
+const contributionKinds = new Set(["context", "patch", "asset", "test", "fork"]);
+const contributionReactionsAllowed = new Set(["useful", "test", "implement", "clarify"]);
+const contributionRelations = new Set(["supports", "conflicts", "supersedes", "implements", "tests"]);
+
+export async function createContribution(
+  slugValue: string,
+  identity: Identity,
+  input: {
+    kind?: string;
+    providerLabel?: string;
+    title?: string;
+    summary?: string;
+    recommendation?: string;
+    files?: string[];
+    lineRefs?: Array<{ path: string; start: number; end?: number }>;
+    payload?: Record<string, unknown>;
+    baseBuildId?: string;
+    parentContributionId?: string;
+    share?: boolean;
+  },
+) {
+  const room = await getRoomForUser(slugValue, identity);
+  const kind = contributionKinds.has(input.kind ?? "") ? input.kind! : "context";
+  const title = cleanText(input.title ?? "Untitled contribution", 100);
+  const summary = cleanText(input.summary ?? "", 2000);
+  if (!summary) throw new RoomError("Add a useful contribution before saving it.");
+  const files = (input.files ?? []).filter((file): file is string => typeof file === "string")
+    .map((file) => cleanText(file, 120)).filter(Boolean).slice(0, 20);
+  const lineRefs = (input.lineRefs ?? []).filter((ref) => ref && typeof ref.path === "string")
+    .slice(0, 30).map((ref) => ({
+      path: cleanText(ref.path, 120),
+      start: Math.max(1, Math.floor(Number(ref.start) || 1)),
+      end: Math.max(1, Math.floor(Number(ref.end ?? ref.start) || 1)),
+    }));
+  const payloadJson = JSON.stringify(input.payload ?? {});
+  if (payloadJson.length > 65_536) throw new RoomError("That contribution payload is too large.");
+  const shared = input.share === true;
+  const id = crypto.randomUUID();
+  await getDb().insert(contributions).values({
+    id,
+    roomId: room.id,
+    ownerId: identity.id,
+    kind,
+    visibility: shared ? "shared" : "private",
+    status: shared ? "shared" : "inbox",
+    providerLabel: cleanText(input.providerLabel ?? "Human", 80) || "Human",
+    title: title || "Untitled contribution",
+    summary,
+    recommendation: cleanText(input.recommendation ?? "", 800),
+    filesJson: JSON.stringify(files),
+    lineRefsJson: JSON.stringify(lineRefs),
+    payloadJson,
+    baseBuildId: cleanText(input.baseBuildId ?? "", 80) || null,
+    parentContributionId: cleanText(input.parentContributionId ?? "", 80) || null,
+    sharedAt: shared ? nowSql() : null,
+  });
+  return id;
+}
+
+export async function listContributions(slugValue: string, identity: Identity, query = "") {
+  const room = await getRoomForUser(slugValue, identity);
+  const db = getDb();
+  const search = cleanText(query, 120).toLowerCase();
+  const [rows, reactionRows, linkRows] = await Promise.all([
+    db.select({
+      id: contributions.id,
+      ownerId: contributions.ownerId,
+      ownerName: users.displayName,
+      kind: contributions.kind,
+      visibility: contributions.visibility,
+      status: contributions.status,
+      providerLabel: contributions.providerLabel,
+      title: contributions.title,
+      summary: contributions.summary,
+      recommendation: contributions.recommendation,
+      filesJson: contributions.filesJson,
+      lineRefsJson: contributions.lineRefsJson,
+      baseBuildId: contributions.baseBuildId,
+      parentContributionId: contributions.parentContributionId,
+      createdAt: contributions.createdAt,
+      updatedAt: contributions.updatedAt,
+      sharedAt: contributions.sharedAt,
+    }).from(contributions).innerJoin(users, eq(contributions.ownerId, users.id))
+      .where(and(eq(contributions.roomId, room.id), or(ne(contributions.visibility, "private"), eq(contributions.ownerId, identity.id))))
+      .orderBy(desc(contributions.createdAt)).limit(200),
+    db.select().from(contributionReactions),
+    db.select().from(contributionLinks),
+  ]);
+  return rows.filter((row) => !search || [row.title, row.summary, row.recommendation, row.providerLabel, row.filesJson]
+    .some((value) => value.toLowerCase().includes(search))).map((row) => ({
+      ...row,
+      files: parseStringArray(row.filesJson),
+      lineRefs: (() => { try { return JSON.parse(row.lineRefsJson); } catch { return []; } })(),
+      mine: row.ownerId === identity.id,
+      reactions: reactionRows.filter((reaction) => reaction.contributionId === row.id),
+      links: linkRows.filter((link) => link.sourceId === row.id || link.targetId === row.id),
+    }));
+}
+
+export async function shareContribution(slugValue: string, identity: Identity, id: string) {
+  const room = await getRoomForUser(slugValue, identity);
+  const result = await getDb().update(contributions).set({ visibility: "shared", status: "shared", sharedAt: nowSql(), updatedAt: nowSql() })
+    .where(and(eq(contributions.id, id), eq(contributions.roomId, room.id), eq(contributions.ownerId, identity.id))).returning({ id: contributions.id });
+  if (!result[0]) throw new RoomError("That private contribution is unavailable.", 404);
+}
+
+export async function toggleContributionReaction(slugValue: string, identity: Identity, id: string, reaction: string) {
+  const room = await getRoomForUser(slugValue, identity);
+  if (!contributionReactionsAllowed.has(reaction)) throw new RoomError("That reaction is not supported.");
+  const db = getDb();
+  const target = await db.select({ id: contributions.id }).from(contributions)
+    .where(and(eq(contributions.id, id), eq(contributions.roomId, room.id), ne(contributions.visibility, "private"))).limit(1);
+  if (!target[0]) throw new RoomError("That shared contribution is unavailable.", 404);
+  const existing = await db.select().from(contributionReactions)
+    .where(and(eq(contributionReactions.contributionId, id), eq(contributionReactions.userId, identity.id), eq(contributionReactions.reaction, reaction))).limit(1);
+  if (existing[0]) await db.delete(contributionReactions).where(and(eq(contributionReactions.contributionId, id), eq(contributionReactions.userId, identity.id), eq(contributionReactions.reaction, reaction)));
+  else await db.insert(contributionReactions).values({ contributionId: id, userId: identity.id, reaction });
+}
+
+export async function linkContributions(slugValue: string, identity: Identity, sourceId: string, targetId: string, relation: string) {
+  const room = await getRoomForUser(slugValue, identity);
+  if (sourceId === targetId || !contributionRelations.has(relation)) throw new RoomError("Choose two contributions and a valid relationship.");
+  const visible = await getDb().select({ id: contributions.id }).from(contributions)
+    .where(and(eq(contributions.roomId, room.id), ne(contributions.visibility, "private"), or(eq(contributions.id, sourceId), eq(contributions.id, targetId))));
+  if (new Set(visible.map((row) => row.id)).size !== 2) throw new RoomError("Both linked contributions must be shared.", 404);
+  await getDb().insert(contributionLinks).values({ sourceId, targetId, relation, createdBy: identity.id }).onConflictDoNothing();
 }
 
 export async function createRoom(

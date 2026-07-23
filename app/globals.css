@@ -1191,6 +1191,46 @@ textarea:focus-visible {
   background: #151613;
 }
 
+.contribution-inbox {
+  display: grid;
+  max-height: min(58vh, 570px);
+  gap: 8px;
+  overflow: hidden;
+  padding: 9px;
+  border: 1px solid rgb(157 140 255 / .25);
+  border-radius: 10px;
+  background: #11120f;
+}
+
+.contribution-inbox > header,
+.contribution-inbox > header > div,
+.contribution-inbox > header form,
+.contribution-inbox article > div,
+.contribution-inbox article footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.contribution-inbox > header { justify-content: space-between; }
+.contribution-inbox > header > div { align-items: baseline; }
+.contribution-inbox > header span { color: #a89cff; font: 650 7px var(--font-code); letter-spacing: .09em; }
+.contribution-inbox > header strong { color: #666960; font: 8px var(--font-code); }
+.contribution-inbox > header input { width: 160px; min-height: 26px; border: 1px solid #30332c; border-radius: 5px; background: #0c0d0b; color: #c9cbc3; padding: 0 7px; font: 8px var(--font-code); }
+.contribution-inbox > header button { color: var(--lime); background: transparent; font: 8px var(--font-code); }
+.contribution-inbox__list { display: grid; min-height: 0; gap: 6px; overflow: auto; }
+.contribution-inbox__list > p { margin: 12px; color: var(--faint); font: 9px/1.5 var(--font-code); text-align: center; }
+.contribution-inbox article { display: grid; gap: 6px; padding: 9px; border: 1px solid #2b2d28; border-radius: 7px; background: #151613; }
+.contribution-inbox article.is-private { border-style: dashed; border-color: rgb(157 140 255 / .32); }
+.contribution-inbox article > div strong { color: #c6c8c0; font: 8px var(--font-code); }
+.contribution-inbox article > div time { margin-left: auto; color: #55584f; font: 7px var(--font-code); }
+.contribution-inbox article h4 { margin: 0; color: #d7d9d1; font-size: 10px; }
+.contribution-inbox article > p { margin: 0; color: #aeb0a8; font-size: 10px; line-height: 1.45; }
+.contribution-inbox article code { color: #74776f; font: 7px var(--font-code); overflow-wrap: anywhere; }
+.contribution-inbox article footer { flex-wrap: wrap; }
+.contribution-inbox article footer button { min-height: 23px; padding: 0 7px; border: 1px solid #34372f; border-radius: 5px; background: #10110e; color: #868980; font: 7px var(--font-code); }
+.contribution-inbox article footer button.is-active { border-color: rgb(202 255 69 / .35); color: var(--lime); }
+
 .context-composer__top { display: grid; grid-template-columns: minmax(120px, .7fr) minmax(180px, 1.3fr); gap: 8px; }
 .context-composer label { display: grid; gap: 4px; }
 .context-composer label span { color: #777a72; font: 650 7px var(--font-code); letter-spacing: .08em; }

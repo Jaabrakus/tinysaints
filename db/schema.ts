@@ -114,6 +114,68 @@ export const messages = sqliteTable(
   ],
 );
 
+export const contributions = sqliteTable(
+  "contributions",
+  {
+    id: text("id").primaryKey(),
+    roomId: text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
+    ownerId: text("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    visibility: text("visibility").notNull().default("private"),
+    status: text("status").notNull().default("inbox"),
+    providerLabel: text("provider_label").notNull().default("Human"),
+    title: text("title").notNull(),
+    summary: text("summary").notNull(),
+    recommendation: text("recommendation").notNull().default(""),
+    filesJson: text("files_json").notNull().default("[]"),
+    lineRefsJson: text("line_refs_json").notNull().default("[]"),
+    payloadJson: text("payload_json").notNull().default("{}"),
+    baseBuildId: text("base_build_id"),
+    parentContributionId: text("parent_contribution_id"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    sharedAt: text("shared_at"),
+  },
+  (table) => [
+    index("contributions_room_visibility_idx").on(table.roomId, table.visibility, table.createdAt),
+    index("contributions_owner_status_idx").on(table.ownerId, table.status, table.createdAt),
+    check("contributions_kind_check", sql`${table.kind} IN ('context', 'patch', 'asset', 'test', 'fork')`),
+    check("contributions_visibility_check", sql`${table.visibility} IN ('private', 'shared', 'published')`),
+    check("contributions_status_check", sql`${table.status} IN ('inbox', 'shared', 'accepted', 'rejected', 'superseded', 'conflicted')`),
+  ],
+);
+
+export const contributionReactions = sqliteTable(
+  "contribution_reactions",
+  {
+    contributionId: text("contribution_id").notNull().references(() => contributions.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    reaction: text("reaction").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.contributionId, table.userId, table.reaction] }),
+    index("contribution_reactions_user_idx").on(table.userId),
+    check("contribution_reactions_kind_check", sql`${table.reaction} IN ('useful', 'test', 'implement', 'clarify')`),
+  ],
+);
+
+export const contributionLinks = sqliteTable(
+  "contribution_links",
+  {
+    sourceId: text("source_id").notNull().references(() => contributions.id, { onDelete: "cascade" }),
+    targetId: text("target_id").notNull().references(() => contributions.id, { onDelete: "cascade" }),
+    relation: text("relation").notNull(),
+    createdBy: text("created_by").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.sourceId, table.targetId, table.relation] }),
+    index("contribution_links_target_idx").on(table.targetId),
+    check("contribution_links_relation_check", sql`${table.relation} IN ('supports', 'conflicts', 'supersedes', 'implements', 'tests')`),
+  ],
+);
+
 export const builds = sqliteTable(
   "builds",
   {

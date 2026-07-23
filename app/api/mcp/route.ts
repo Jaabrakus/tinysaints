@@ -1,6 +1,6 @@
 import {
   authenticateAgentToken,
-  addContextCapsule,
+  createContribution,
   getAgentConvergenceSnapshot,
   getAgentProjectSnapshot,
   RoomError,
@@ -170,11 +170,14 @@ export async function POST(request: Request) {
       }
       if (name === "share_context") {
         const room = String(args.room ?? "");
-        await addContextCapsule(room, identity, {
-          agentLabel: typeof args.agentLabel === "string" ? args.agentLabel : "Connected agent",
+        await createContribution(room, identity, {
+          kind: "context",
+          providerLabel: typeof args.agentLabel === "string" ? args.agentLabel : "Connected agent",
+          title: "Agent context",
           files: Array.isArray(args.files) ? args.files.map(String) : [],
           summary: typeof args.summary === "string" ? args.summary : "",
           recommendation: typeof args.recommendation === "string" ? args.recommendation : "",
+          share: true,
         });
         return result(rpc.id, {
           content: [{ type: "text", text: "Context shared with the room. No code was changed." }],
