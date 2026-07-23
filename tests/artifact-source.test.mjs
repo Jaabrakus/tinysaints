@@ -6,6 +6,7 @@ import {
   extractArtifactSource,
   generatedSourceFromFiles,
   makeStarterProject,
+  validateArtifactFiles,
 } from "../lib/starter-artifact.ts";
 
 test("compiles the bounded multi-file starter project", () => {
@@ -34,10 +35,12 @@ test("creates a playable multi-lane game studio project", () => {
       "assets/README.md",
       "audio/README.md",
       "index.html",
+      "package.json",
       "playtests/README.md",
       "project.make.json",
       "README.md",
       "src/app.js",
+      "src/phaser-game.js",
       "styles.css",
       "world/level-01.json",
     ],
@@ -45,7 +48,9 @@ test("creates a playable multi-lane game studio project", () => {
   assert.match(artifact, /<canvas id="game"/);
   assert.match(artifact, /requestAnimationFrame\(frame\)/);
   assert.match(artifact, /Collect every spark/);
-  assert.match(files.find((file) => file.path === "project.make.json").content, /browser-canvas-2d/);
+  assert.match(files.find((file) => file.path === "project.make.json").content, /phaser-4/);
+  assert.match(files.find((file) => file.path === "package.json").content, /"phaser": "4\.2\.0"/);
+  assert.match(files.find((file) => file.path === "src/phaser-game.js").content, /makeRoomAssets/);
 });
 
 test("requires one unique index.html and styles.css snapshot", () => {
@@ -105,6 +110,25 @@ test("manual and model source share the same capability boundary", () => {
         ],
         "unsafe",
       ),
+    /capability the preview does not allow/,
+  );
+});
+
+test("validates every JavaScript file without blocking ordinary functions", () => {
+  assert.doesNotThrow(() =>
+    validateArtifactFiles([
+      { path: "index.html", content: "<main>safe</main>" },
+      { path: "styles.css", content: "main{}" },
+      { path: "src/feature.js", content: "function ready() { return true; }" },
+    ]),
+  );
+  assert.throws(
+    () =>
+      validateArtifactFiles([
+        { path: "index.html", content: "<main>unsafe helper</main>" },
+        { path: "styles.css", content: "main{}" },
+        { path: "src/feature.js", content: "const escape = Function('return this')" },
+      ]),
     /capability the preview does not allow/,
   );
 });

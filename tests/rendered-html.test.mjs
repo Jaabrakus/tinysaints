@@ -7,12 +7,13 @@ async function source(path) {
 }
 
 test("requires identity and drives the product from persisted room state", async () => {
-  const [page, client, roomRoute, roomService, convergenceRoute] = await Promise.all([
+  const [page, client, roomRoute, roomService, convergenceRoute, playRoute] = await Promise.all([
     source("../app/page.tsx"),
     source("../app/RoomClient.tsx"),
     source("../app/api/room/route.ts"),
     source("../lib/room-service.ts"),
     source("../app/api/converge/route.ts"),
+    source("../app/api/play/route.ts"),
   ]);
 
   assert.match(page, /requireChatGPTUser\("\/"\)/);
@@ -60,6 +61,12 @@ test("requires identity and drives the product from persisted room state", async
   assert.match(roomService, /isNotNull\(rooms\.presentedAt\)/);
   assert.match(client, /sandbox="allow-scripts"/);
   assert.match(client, /activeTab === "showcase"/);
+  assert.match(client, /playableUrl/);
+  assert.match(playRoute, /getPlayableProjectSnapshot/);
+  assert.match(playRoute, /phaser@\$\{PHASER_VERSION\}/);
+  assert.match(playRoute, /globalThis\.makeRoomAssets/);
+  assert.match(playRoute, /frame-ancestors 'self'/);
+  assert.match(roomService, /presentedViewer/);
   assert.doesNotMatch(client, /const\s+(messages|rooms|members)\s*=\s*\[/);
 });
 

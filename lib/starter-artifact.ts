@@ -174,6 +174,7 @@ export function validateArtifactFiles(
     if (inputFile.language && inputFile.language !== language) {
       throw new Error(`${path} has invalid language metadata.`);
     }
+    if (language === "javascript") validateArtifactJavascript(inputFile.content);
     files.push({ path, content: inputFile.content, language });
   }
   if (!paths.has("index.html") || !paths.has("styles.css")) {
@@ -223,6 +224,7 @@ function makeGameStarterProject(roomName: string): ArtifactSourceFile[] {
     <div class="scoreboard"><span>SPARKS</span><strong id="score">0 / 7</strong></div>
   </header>
   <section class="stage" aria-label="Playable game">
+    <div id="phaser-root" aria-label="Phaser game runtime"></div>
     <canvas id="game" width="960" height="540" aria-label="Move the lime player and collect seven sparks"></canvas>
     <div class="game-status" id="game-status">Collect every spark. Use WASD or arrow keys.</div>
   </section>
@@ -251,6 +253,7 @@ h1{margin:6px 0 16px;font-size:clamp(28px,5vw,58px);line-height:.9;letter-spacin
 .scoreboard{display:grid;min-width:112px;gap:3px;padding:11px 14px;border:1px solid var(--line);border-radius:10px;background:#11130f;text-align:right}
 .scoreboard span{color:var(--muted);font:700 9px monospace;letter-spacing:.1em}.scoreboard strong{font:700 18px monospace}
 .stage{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:14px;background:#11130f;box-shadow:0 24px 80px #0008}
+#phaser-root{display:none;width:100%;aspect-ratio:16/9}.phaser-runtime #phaser-root{display:block}.phaser-runtime #game{display:none}#phaser-root canvas{display:block!important;width:100%!important;height:100%!important}
 canvas{display:block;width:100%;height:auto;aspect-ratio:16/9}
 .game-status{position:absolute;right:12px;bottom:12px;left:12px;padding:9px 11px;border:1px solid #ffffff17;border-radius:7px;background:#090a08c9;color:#bdc0b7;font:11px/1.4 monospace;backdrop-filter:blur(8px)}
 .game-controls{margin-top:12px}.pad{display:flex;gap:7px}.pad button,.reset{min-width:40px;height:38px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--paper);cursor:pointer}
@@ -353,13 +356,124 @@ resetGame();
 requestAnimationFrame(frame);`,
     },
     {
+      path: "src/phaser-game.js",
+      language: "javascript",
+      content: `const roomAssets = globalThis.makeRoomAssets ?? { list: [], byName: {} };
+
+class RoomScene extends Phaser.Scene {
+  constructor() {
+    super("room");
+    this.player = null;
+    this.cursors = null;
+    this.destination = null;
+  }
+
+  preload() {
+    for (const asset of roomAssets.list) {
+      if (asset.kind === "image") this.load.image("asset:" + asset.id, asset.url);
+      if (asset.kind === "audio") this.load.audio("asset:" + asset.id, asset.url);
+    }
+  }
+
+  create() {
+    this.add.grid(480, 270, 960, 540, 48, 48, 0x10120e, 1, 0x24281f, 0.55);
+    this.add.text(28, 24, "MAKE/ROOM · PHASER 4.2", {
+      color: "#caff45",
+      fontFamily: "monospace",
+      fontSize: "16px",
+    });
+    this.add.text(28, 50, "WASD / arrows / click to move · uploaded assets are loaded below", {
+      color: "#8e9287",
+      fontFamily: "monospace",
+      fontSize: "12px",
+    });
+
+    this.player = this.add.circle(140, 270, 18, 0xcaff45);
+    this.player.setStrokeStyle(4, 0x405019, 0.9);
+    this.cursors = this.input.keyboard.createCursorKeys();
+    this.keys = this.input.keyboard.addKeys("W,A,S,D");
+    this.input.on("pointerdown", (pointer) => {
+      this.destination = { x: pointer.worldX, y: pointer.worldY };
+    });
+
+    const images = roomAssets.list.filter((asset) => asset.kind === "image").slice(0, 6);
+    images.forEach((asset, index) => {
+      const key = "asset:" + asset.id;
+      if (!this.textures.exists(key)) return;
+      const x = 120 + index * 142;
+      const image = this.add.image(x, 450, key);
+      const scale = Math.min(92 / Math.max(image.width, 1), 72 / Math.max(image.height, 1), 1);
+      image.setScale(scale);
+      this.add.text(x, 500, asset.name.slice(0, 16), {
+        color: "#9d8cff",
+        fontFamily: "monospace",
+        fontSize: "10px",
+      }).setOrigin(0.5);
+    });
+
+    if (roomAssets.list.length === 0) {
+      this.add.text(480, 450, "Upload art or audio in the Assets lane; it will appear here automatically.", {
+        color: "#9d8cff",
+        fontFamily: "monospace",
+        fontSize: "12px",
+      }).setOrigin(0.5);
+    }
+  }
+
+  update(_time, delta) {
+    if (!this.player || !this.cursors) return;
+    const left = this.cursors.left.isDown || this.keys.A.isDown;
+    const right = this.cursors.right.isDown || this.keys.D.isDown;
+    const up = this.cursors.up.isDown || this.keys.W.isDown;
+    const down = this.cursors.down.isDown || this.keys.S.isDown;
+    let horizontal = Number(right) - Number(left);
+    let vertical = Number(down) - Number(up);
+    if (horizontal || vertical) this.destination = null;
+    if (this.destination) {
+      const dx = this.destination.x - this.player.x;
+      const dy = this.destination.y - this.player.y;
+      if (Math.hypot(dx, dy) < 8) this.destination = null;
+      else { horizontal = dx; vertical = dy; }
+    }
+    const length = Math.hypot(horizontal, vertical) || 1;
+    const distance = 260 * Math.min(delta, 40) / 1000;
+    this.player.x = Phaser.Math.Clamp(this.player.x + horizontal / length * distance, 20, 940);
+    this.player.y = Phaser.Math.Clamp(this.player.y + vertical / length * distance, 86, 410);
+  }
+}
+
+document.body.classList.add("phaser-runtime");
+new Phaser.Game({
+  type: Phaser.AUTO,
+  parent: "phaser-root",
+  width: 960,
+  height: 540,
+  backgroundColor: "#10120e",
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [RoomScene],
+});`,
+    },
+    {
+      path: "package.json",
+      language: "json",
+      content: JSON.stringify({
+        name: roomName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "make-room-game",
+        version: "0.1.0",
+        private: true,
+        type: "module",
+        scripts: { dev: "vite", build: "vite build" },
+        dependencies: { phaser: "4.2.0" },
+        makeRoom: { runtime: "phaser", entry: "src/phaser-game.js" },
+      }, null, 2),
+    },
+    {
       path: "project.make.json",
       language: "json",
       content: JSON.stringify({
         schema: 1,
         kind: "game",
-        runtime: "browser-canvas-2d",
-        entry: "src/app.js",
+        runtime: "phaser-4",
+        entry: "src/phaser-game.js",
         lanes: {
           logic: ["src/**"],
           world: ["world/**"],
@@ -392,7 +506,7 @@ requestAnimationFrame(frame);`,
     {
       path: "README.md",
       language: "markdown",
-      content: `# ${roomName}\n\nA playable make/room game project. Work in parallel across logic, world, art, audio, and playtest lanes; present the fork; then converge the best build.`,
+      content: `# ${roomName}\n\nA playable Phaser 4 make/room project with a dependency-free Canvas fallback. Uploaded room assets are exposed at runtime through makeRoomAssets.list and makeRoomAssets.byName. Work in parallel across logic, world, art, audio, and playtest lanes; present the fork; then converge the best build.`,
     },
   ]);
 }
@@ -505,12 +619,7 @@ export function assembleArtifactFiles(
     files.find((file) => file.path === "app.js")?.content ??
     "";
   if (!javascript.trim()) return base;
-  const forbiddenJavascript =
-    /\b(?:eval|Function|WebAssembly|Worker|SharedWorker|importScripts)\b|\b(?:window|self|globalThis)\s*\.\s*(?:open|parent|top|opener)\b|\bdocument\s*\.\s*cookie\b|\b(?:localStorage|sessionStorage|indexedDB)\b/i;
-  if (forbiddenJavascript.test(javascript)) {
-    throw new Error("Project JavaScript requested a capability the preview does not allow.");
-  }
-  const safeJavascript = javascript.replace(/<\/script/gi, "<\\/script");
+  const safeJavascript = validateArtifactJavascript(javascript);
   const scriptEnabledBase = base.replace(
     "script-src 'none'",
     `script-src 'nonce-${scriptNonce}'; child-src 'none'; worker-src 'none'`,
@@ -519,4 +628,13 @@ export function assembleArtifactFiles(
     "</body>",
     `<script nonce="${scriptNonce}" data-make-room-entry>${safeJavascript}</script></body>`,
   );
+}
+
+export function validateArtifactJavascript(javascript: string) {
+  const forbiddenJavascript =
+    /\b(?:eval|WebAssembly|Worker|SharedWorker|importScripts)\b|\b(?:window|self|globalThis)\s*\.\s*(?:open|parent|top|opener)\b|\bdocument\s*\.\s*cookie\b|\b(?:localStorage|sessionStorage|indexedDB)\b/i;
+  if (forbiddenJavascript.test(javascript) || /\bFunction\s*\(/.test(javascript)) {
+    throw new Error("Project JavaScript requested a capability the preview does not allow.");
+  }
+  return javascript.replace(/<\/script/gi, "<\\/script");
 }

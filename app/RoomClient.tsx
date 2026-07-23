@@ -188,6 +188,32 @@ function projectKindFor(build: Build | null | undefined): ProjectKind {
   }
 }
 
+function runtimeEntryFor(build: Build | null | undefined) {
+  for (const manifestPath of ["package.json", "project.make.json"]) {
+    const manifest = getSourceFile(build, manifestPath);
+    if (!manifest) continue;
+    try {
+      const parsed = JSON.parse(manifest.content) as {
+        entry?: unknown;
+        makeRoom?: { entry?: unknown };
+      };
+      const entry = typeof parsed.makeRoom?.entry === "string"
+        ? parsed.makeRoom.entry
+        : typeof parsed.entry === "string"
+          ? parsed.entry
+          : "";
+      if (entry && getSourceFile(build, entry)) return entry;
+    } catch {
+      // A malformed manifest remains visible in Code; the safe fallback stays playable.
+    }
+  }
+  return getSourceFile(build, "src/app.js") ? "src/app.js" : "index.html";
+}
+
+function playableUrl(slug: string, build: Build) {
+  return `/api/play?room=${encodeURIComponent(slug)}&build=${encodeURIComponent(build.id)}`;
+}
+
 function laneForPath(path: string, kind: ProjectKind) {
   if (kind === "game") {
     if (path.startsWith("assets/")) return "art";
@@ -964,6 +990,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const visibleBuild = state?.staged ?? state?.published;
   const projectKind = projectKindFor(visibleBuild);
   const isGameProject = projectKind === "game";
+  const runtimeEntry = runtimeEntryFor(visibleBuild);
   const workspaceTabs: WorkspaceTab[] = isGameProject
     ? ["preview", "code", "assets", "forks", "diff", "showcase", "activity"]
     : ["preview", "code", "forks", "diff", "showcase", "activity"];
@@ -973,7 +1000,15 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       ...Object.keys(sourceDrafts),
     ]),
   ).sort((left, right) => {
-    const preferred = ["index.html", "styles.css", "src/app.js", "README.md"];
+    const preferred = [
+      "index.html",
+      "styles.css",
+      runtimeEntryFor(visibleBuild),
+      "src/app.js",
+      "project.make.json",
+      "package.json",
+      "README.md",
+    ];
     const leftIndex = preferred.indexOf(left);
     const rightIndex = preferred.indexOf(right);
     if (leftIndex >= 0 || rightIndex >= 0) {
@@ -1437,6 +1472,17 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               >
                 export ↓
               </a>
+              {isGameProject && visibleBuild && (
+                <a
+                  className="quiet-button play-link"
+                  href={playableUrl(slug, visibleBuild)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open this exact playable build in a new tab"
+                >
+                  play ↗
+                </a>
+              )}
               <button
                 className="quiet-button"
                 type="button"
@@ -1561,7 +1607,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               <span>WORK LANES</span>
               {[
                 ["play", "__play__", "▶"],
-                ["logic", "src/app.js", "JS"],
+                ["logic", runtimeEntry, "JS"],
                 ["world", "world/level-01.json", "{}"],
                 ["art", "__assets_image__", "▧"],
                 ["audio", "__assets_audio__", "♪"],
@@ -1612,7 +1658,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 {isGameProject && tabName === "preview" ? "play" : tabName}
               </button>
             ))}
-            <span className="sandbox-label"><i /> isolated JS · no network</span>
+            <span className="sandbox-label"><i /> isolated runtime · no app network</span>
           </div>
 
           <div
@@ -1639,7 +1685,8 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 key={visibleBuild.id}
                 className="artifact-frame"
                 title={`${visibleBuild.name} interactive preview`}
-                srcDoc={visibleBuild.html}
+                src={isGameProject ? playableUrl(slug, visibleBuild) : undefined}
+                srcDoc={isGameProject ? undefined : visibleBuild.html}
                 sandbox="allow-scripts"
                 referrerPolicy="no-referrer"
               />
@@ -2159,7 +2206,8 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                       </header>
                       <iframe
                         title={`${state.published.name} parent preview`}
-                        srcDoc={state.published.html}
+                        src={projectKindFor(state.published) === "game" ? playableUrl(slug, state.published) : undefined}
+                        srcDoc={projectKindFor(state.published) === "game" ? undefined : state.published.html}
                         sandbox="allow-scripts"
                         referrerPolicy="no-referrer"
                       />
@@ -2179,7 +2227,8 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                         </header>
                         <iframe
                           title={`${entry.ownerName}'s fork preview`}
-                          srcDoc={entry.build.html}
+                          src={projectKindFor(entry.build) === "game" ? playableUrl(entry.slug, entry.build) : undefined}
+                          srcDoc={projectKindFor(entry.build) === "game" ? undefined : entry.build.html}
                           sandbox="allow-scripts"
                           referrerPolicy="no-referrer"
                         />

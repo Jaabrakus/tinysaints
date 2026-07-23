@@ -1132,6 +1132,66 @@ export async function getExportProjectSnapshot(
   };
 }
 
+export async function getPlayableProjectSnapshot(
+  slugValue: string,
+  identity: Identity,
+  requestedBuildId?: string,
+) {
+  await ensureDatabase();
+  await upsertUser(identity);
+  const db = getDb();
+  const slug = normalizeSlug(slugValue);
+  const [room] = await db.select().from(rooms).where(eq(rooms.slug, slug)).limit(1);
+  if (!room) throw new RoomError("That playable room does not exist.", 404);
+
+  const [membership] = await db
+    .select({ role: roomMembers.role })
+    .from(roomMembers)
+    .where(and(eq(roomMembers.roomId, room.id), eq(roomMembers.userId, identity.id)))
+    .limit(1);
+  let presentedViewer = false;
+  if (!membership) {
+    if (!room.parentRoomId || !room.presentedAt) {
+      throw new RoomError("You need room access before playing this build.", 403);
+    }
+    const [parentMembership] = await db
+      .select({ role: roomMembers.role })
+      .from(roomMembers)
+      .where(
+        and(
+          eq(roomMembers.roomId, room.parentRoomId),
+          eq(roomMembers.userId, identity.id),
+        ),
+      )
+      .limit(1);
+    if (!parentMembership) throw new RoomError("You need parent-room access before playing this fork.", 403);
+    presentedViewer = true;
+  }
+
+  const conditions = [eq(builds.roomId, room.id)];
+  if (requestedBuildId?.trim()) conditions.push(eq(builds.id, requestedBuildId.trim()));
+  if (presentedViewer) conditions.push(eq(builds.status, "published"));
+  else conditions.push(sql`${builds.status} IN ('published', 'staged')`);
+  const [build] = await db
+    .select()
+    .from(builds)
+    .where(and(...conditions))
+    .orderBy(desc(builds.version), desc(builds.createdAt))
+    .limit(1);
+  if (!build) throw new RoomError("That playable build is no longer available.", 404);
+
+  return {
+    room: { slug: room.slug, name: room.name },
+    build: { id: build.id, version: build.version, status: build.status, name: build.name },
+    files: asArtifactSourceFiles(await ensureBuildFiles(build)),
+    assets: await db
+      .select()
+      .from(projectAssets)
+      .where(eq(projectAssets.roomId, room.id))
+      .orderBy(asc(projectAssets.createdAt), asc(projectAssets.id)),
+  };
+}
+
 export async function addMessage(
   slugValue: string,
   identity: Identity,
