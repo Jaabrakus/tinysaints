@@ -4072,6 +4072,189 @@ a.fork-node:hover {
   }
 }
 
+.mobile-app-nav {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .product-shell {
+    background: #0f100e;
+  }
+
+  .workspace {
+    display: block;
+    height: calc(100dvh - 58px);
+    padding: 0;
+    overflow: hidden;
+    scroll-snap-type: none;
+  }
+
+  .room-rail,
+  .conversation,
+  .build-panel {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    height: calc(100dvh - 58px);
+    min-height: 0;
+    border: 0;
+  }
+
+  .room-rail {
+    display: none;
+    padding: 12px;
+  }
+
+  .conversation,
+  .build-panel {
+    display: none;
+  }
+
+  .mobile-view-rooms .room-rail,
+  .mobile-view-chat .conversation,
+  .mobile-view-ai .conversation,
+  .mobile-view-build .build-panel {
+    display: flex;
+  }
+
+  .mobile-view-ai .message-list,
+  .mobile-view-ai .room-note,
+  .mobile-view-ai .proposal-card,
+  .mobile-view-ai .composer,
+  .mobile-view-ai .composer-hint,
+  .mobile-view-ai .model-blocker {
+    display: none;
+  }
+
+  .mobile-view-ai .composer-wrap {
+    min-height: 0;
+    flex: 1;
+    overflow: auto;
+    background: #0f100e;
+  }
+
+  .mobile-view-ai .contribution-inbox {
+    max-height: none;
+    flex: 1;
+  }
+
+  .mobile-view-ai .synthesis-line > span,
+  .mobile-view-ai .synthesis-line button:last-child {
+    display: none;
+  }
+
+  .mobile-app-nav {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 100;
+    display: grid;
+    height: calc(58px + env(safe-area-inset-bottom));
+    grid-template-columns: repeat(4, 1fr);
+    padding: 4px 8px env(safe-area-inset-bottom);
+    border-top: 1px solid #2c2e29;
+    background: rgb(17 18 15 / .97);
+    backdrop-filter: blur(18px);
+  }
+
+  .mobile-app-nav button {
+    display: grid;
+    place-content: center;
+    gap: 2px;
+    border-radius: 8px;
+    background: transparent;
+    color: #666960;
+    font: 8px var(--font-code);
+    text-transform: uppercase;
+  }
+
+  .mobile-app-nav button span {
+    color: #8b8e84;
+    font-size: 15px;
+    line-height: 1;
+  }
+
+  .mobile-app-nav button.is-active {
+    background: rgb(202 255 69 / .07);
+    color: var(--lime);
+  }
+
+  .mobile-app-nav button.is-active span {
+    color: var(--lime);
+  }
+
+  .rail-brand {
+    min-height: 44px;
+  }
+
+  .room-list {
+    display: grid;
+    overflow-y: auto;
+  }
+
+  .room-link {
+    width: 100%;
+    min-width: 0;
+    min-height: 58px;
+  }
+
+  .conversation__header,
+  .build-panel__header {
+    min-height: 52px;
+    padding: env(safe-area-inset-top) 12px 0;
+  }
+
+  .conversation__actions .mobile-pane-switch,
+  .build-panel__actions .mobile-pane-switch {
+    display: none;
+  }
+
+  .message-list {
+    padding: 8px 11px 14px;
+  }
+
+  .message {
+    grid-template-columns: 30px minmax(0, 1fr);
+    padding: 12px 2px;
+  }
+
+  .composer-wrap {
+    padding: 7px 9px 9px;
+    background: linear-gradient(180deg, transparent, #0f100e 8px);
+  }
+
+  .composer {
+    min-height: 58px;
+    border-radius: 15px;
+  }
+
+  .composer textarea {
+    min-height: 42px;
+    font-size: 16px;
+  }
+
+  .composer-hint,
+  .room-note {
+    font-size: 8px;
+  }
+
+  .build-tabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .source-workspace {
+    grid-template-columns: 86px minmax(0, 1fr);
+  }
+
+  .source-editor__meta > span,
+  .source-breadcrumb span:first-child,
+  .source-breadcrumb span:nth-child(2) {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

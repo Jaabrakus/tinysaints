@@ -10,6 +10,7 @@ type SourcePath = string;
 type RoomActionValue = string | number | boolean | null;
 type ProjectKind = "game" | "app";
 type WorkspaceTab = "preview" | "code" | "assets" | "forks" | "diff" | "showcase" | "activity";
+type MobileView = "rooms" | "chat" | "build" | "ai";
 
 type SourceFile = {
   path: SourcePath;
@@ -365,6 +366,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [contributions, setContributions] = useState<Contribution[]>([]);
   const [contributionSearch, setContributionSearch] = useState("");
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("code");
+  const [mobileView, setMobileView] = useState<MobileView>("chat");
   const [activeSourcePath, setActiveSourcePath] = useState<SourcePath>("index.html");
   const [activeDiffPath, setActiveDiffPath] = useState<SourcePath>("index.html");
   const [sourceDrafts, setSourceDrafts] = useState<Partial<Record<SourcePath, SourceDraft>>>({});
@@ -1444,8 +1446,13 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     setActiveTab("code");
   }
 
+  function selectMobileView(view: MobileView) {
+    setMobileView(view);
+    if (view === "ai") setContextOpen(true);
+  }
+
   return (
-    <main className="product-shell">
+    <main className={`product-shell mobile-view-${mobileView}`}>
       <div className="workspace">
         <aside className="room-rail" aria-label="Your rooms">
           <div className="rail-brand">
@@ -2867,6 +2874,12 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
           </footer>
         </aside>
       </div>
+      <nav className="mobile-app-nav" aria-label="Mobile workspace">
+        <button type="button" className={mobileView === "rooms" ? "is-active" : ""} onClick={() => selectMobileView("rooms")}><span>◎</span>rooms</button>
+        <button type="button" className={mobileView === "chat" ? "is-active" : ""} onClick={() => selectMobileView("chat")}><span>◌</span>chat</button>
+        <button type="button" className={mobileView === "build" ? "is-active" : ""} onClick={() => selectMobileView("build")}><span>▶</span>build</button>
+        <button type="button" className={mobileView === "ai" ? "is-active" : ""} onClick={() => selectMobileView("ai")}><span>✳</span>AI</button>
+      </nav>
     </main>
   );
 }
