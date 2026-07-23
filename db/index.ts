@@ -97,6 +97,23 @@ const schemaStatements = [
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(build_id, path)
   )`,
+  `CREATE TABLE IF NOT EXISTS project_assets (
+    id TEXT PRIMARY KEY NOT NULL,
+    room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    uploaded_by TEXT NOT NULL REFERENCES users(id),
+    source_asset_id TEXT,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('image', 'audio')),
+    content_type TEXT NOT NULL,
+    object_key TEXT NOT NULL,
+    sha256 TEXT NOT NULL CHECK(
+      length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+    byte_count INTEGER NOT NULL CHECK(byte_count > 0 AND byte_count <= 5242880),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS project_assets_room_idx ON project_assets(room_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS project_assets_object_idx ON project_assets(object_key)`,
   `CREATE TABLE IF NOT EXISTS votes (
     build_id TEXT NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

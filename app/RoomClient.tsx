@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { buildDiffLines, diffStats } from "../lib/kimi-code-diff";
@@ -9,6 +9,7 @@ type Color = "lime" | "violet" | "coral" | "sky" | "cream";
 type SourcePath = string;
 type RoomActionValue = string | number | boolean | null;
 type ProjectKind = "game" | "app";
+type WorkspaceTab = "preview" | "code" | "assets" | "forks" | "diff" | "showcase" | "activity";
 
 type SourceFile = {
   path: SourcePath;
@@ -36,6 +37,20 @@ type Build = {
   createdBy: string;
   createdAt: string;
   publishedAt: string | null;
+};
+
+type ProjectAsset = {
+  id: string;
+  name: string;
+  kind: "image" | "audio";
+  contentType: string;
+  byteCount: number;
+  sha256: string;
+  sourceAssetId: string | null;
+  uploadedBy: string;
+  uploadedByName: string;
+  createdAt: string;
+  canDelete: boolean;
 };
 
 type RoomState = {
@@ -106,6 +121,7 @@ type RoomState = {
     lastUsedAt: string | null;
     revokedAt: string | null;
   }>;
+  assets: ProjectAsset[];
   model: { configured: boolean; name: string };
 };
 
@@ -193,6 +209,12 @@ function utf8ByteCount(value: string) {
   return new TextEncoder().encode(value).byteLength;
 }
 
+function fileSizeLabel(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
 function initials(name: string) {
   return name
     .split(/\s+|@/)
@@ -251,9 +273,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [state, setState] = useState<RoomState | null>(null);
   const slug = state?.room.slug ?? initialSlug;
   const [draft, setDraft] = useState("");
-  const [activeTab, setActiveTab] = useState<"preview" | "code" | "forks" | "diff" | "showcase" | "activity">(
-    "code",
-  );
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("code");
   const [activeSourcePath, setActiveSourcePath] = useState<SourcePath>("index.html");
   const [activeDiffPath, setActiveDiffPath] = useState<SourcePath>("index.html");
   const [sourceDrafts, setSourceDrafts] = useState<Partial<Record<SourcePath, SourceDraft>>>({});
@@ -266,6 +286,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [newRoomTemplate, setNewRoomTemplate] = useState<ProjectKind>("game");
   const [newFileOpen, setNewFileOpen] = useState(false);
   const [newFilePath, setNewFilePath] = useState("");
+  const [assetKindFilter, setAssetKindFilter] = useState<"all" | "image" | "audio">("all");
   const [agentOpen, setAgentOpen] = useState(false);
   const [agentEndpoint, setAgentEndpoint] = useState(() =>
     typeof window === "undefined"
@@ -288,6 +309,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const saveSourceProposalRef = useRef<() => void>(() => undefined);
   const conversationPane = useRef<HTMLElement>(null);
   const buildPane = useRef<HTMLElement>(null);
+  const assetFileInput = useRef<HTMLInputElement>(null);
 
   const loadRoom = useCallback(
     async (inviteToken?: string | null) => {
@@ -542,6 +564,50 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       }
     } catch (inviteError) {
       setError(inviteError instanceof Error ? inviteError.message : "The invite could not be created.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function uploadAssets(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (!state || files.length === 0 || busy) return;
+    setBusy("asset-upload");
+    setError(null);
+    try {
+      let nextState = state;
+      for (const file of files) {
+        const form = new FormData();
+        form.set("room", slug);
+        form.set("file", file);
+        const response = await fetch("/api/assets", { method: "POST", body: form });
+        nextState = await readResponse<RoomState>(response);
+      }
+      setState(nextState);
+      setActiveTab("assets");
+      setNotice(`${files.length} shared asset${files.length === 1 ? "" : "s"} stored in the room`);
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "The asset could not upload.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeAsset(asset: ProjectAsset) {
+    if (!state || !asset.canDelete || busy) return;
+    setBusy(`asset-delete-${asset.id}`);
+    setError(null);
+    try {
+      const response = await fetch("/api/assets", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ room: slug, assetId: asset.id }),
+      });
+      setState(await readResponse<RoomState>(response));
+      setNotice(`${asset.name} removed from this branch`);
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : "The asset could not be removed.");
     } finally {
       setBusy(null);
     }
@@ -898,6 +964,9 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const visibleBuild = state?.staged ?? state?.published;
   const projectKind = projectKindFor(visibleBuild);
   const isGameProject = projectKind === "game";
+  const workspaceTabs: WorkspaceTab[] = isGameProject
+    ? ["preview", "code", "assets", "forks", "diff", "showcase", "activity"]
+    : ["preview", "code", "forks", "diff", "showcase", "activity"];
   const sourcePaths = Array.from(
     new Set([
       ...(visibleBuild?.files.map((file) => file.path) ?? []),
@@ -950,10 +1019,18 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const onlineMembers =
     state?.members.filter((member) => member.online) ?? [];
   const currentUserName = state?.user.displayName ?? initialUser.displayName;
+  const visibleAssets = state?.assets.filter(
+    (asset) => assetKindFilter === "all" || asset.kind === assetKindFilter,
+  ) ?? [];
 
   function openProjectLane(path: string) {
     if (path === "__play__") {
       setActiveTab("preview");
+      return;
+    }
+    if (path === "__assets_image__" || path === "__assets_audio__") {
+      setAssetKindFilter(path.endsWith("image__") ? "image" : "audio");
+      setActiveTab("assets");
       return;
     }
     if (!sourcePaths.includes(path)) return;
@@ -1486,15 +1563,17 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 ["play", "__play__", "▶"],
                 ["logic", "src/app.js", "JS"],
                 ["world", "world/level-01.json", "{}"],
-                ["art", "assets/README.md", "▧"],
-                ["audio", "audio/README.md", "♪"],
+                ["art", "__assets_image__", "▧"],
+                ["audio", "__assets_audio__", "♪"],
                 ["test", "playtests/README.md", "✓"],
               ].map(([label, path, glyph]) => (
                 <button
                   type="button"
                   className={
                     (path === "__play__" && activeTab === "preview") ||
-                    (path !== "__play__" && activeTab === "code" && activeSourcePath === path)
+                    (path === "__assets_image__" && activeTab === "assets" && assetKindFilter === "image") ||
+                    (path === "__assets_audio__" && activeTab === "assets" && assetKindFilter === "audio") ||
+                    (!path.startsWith("__") && activeTab === "code" && activeSourcePath === path)
                       ? "is-active"
                       : ""
                   }
@@ -1510,7 +1589,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
           )}
 
           <div className="build-tabs" role="tablist" aria-label="Build views">
-            {(["preview", "code", "forks", "diff", "showcase", "activity"] as const).map((tabName) => (
+            {workspaceTabs.map((tabName) => (
               <button
                 type="button"
                 role="tab"
@@ -1564,6 +1643,99 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 sandbox="allow-scripts"
                 referrerPolicy="no-referrer"
               />
+            )}
+            {activeTab === "assets" && state && (
+              <section className="asset-library" aria-label="Shared project assets">
+                <header className="asset-library__header">
+                  <div>
+                    <span>SHARED ASSET STORE</span>
+                    <h3>Art and audio that travel with the project</h3>
+                    <p>Forks inherit these references. New fork assets return to the parent when that fork is merged.</p>
+                  </div>
+                  <div className="asset-library__actions">
+                    <div className="asset-filters" role="group" aria-label="Filter assets">
+                      {(["all", "image", "audio"] as const).map((kind) => (
+                        <button
+                          type="button"
+                          className={assetKindFilter === kind ? "is-active" : ""}
+                          onClick={() => setAssetKindFilter(kind)}
+                          aria-pressed={assetKindFilter === kind}
+                          key={kind}
+                        >
+                          {kind}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      ref={assetFileInput}
+                      className="asset-file-input"
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif,audio/mpeg,audio/ogg,audio/wav,audio/x-wav,audio/mp4"
+                      multiple
+                      onChange={(event) => void uploadAssets(event)}
+                      aria-label="Upload game assets"
+                    />
+                    <button
+                      className="asset-upload-button"
+                      type="button"
+                      onClick={() => assetFileInput.current?.click()}
+                      disabled={Boolean(busy)}
+                    >
+                      {busy === "asset-upload" ? "uploading…" : "upload assets +"}
+                    </button>
+                  </div>
+                </header>
+
+                {visibleAssets.length > 0 ? (
+                  <div className="asset-grid">
+                    {visibleAssets.map((asset) => {
+                      const assetUrl = `/api/assets?room=${encodeURIComponent(slug)}&asset=${encodeURIComponent(asset.id)}`;
+                      return (
+                        <article className="asset-card" key={asset.id}>
+                          <div className={`asset-card__preview asset-card__preview--${asset.kind}`}>
+                            {asset.kind === "image" ? (
+                              <img src={assetUrl} alt={asset.name} loading="lazy" />
+                            ) : (
+                              <div>
+                                <span>♪</span>
+                                <audio controls preload="metadata" src={assetUrl}>
+                                  Your browser does not support audio previews.
+                                </audio>
+                              </div>
+                            )}
+                          </div>
+                          <div className="asset-card__body">
+                            <span>{asset.sourceAssetId ? "INHERITED REFERENCE" : `${asset.kind.toUpperCase()} ASSET`}</span>
+                            <strong title={asset.name}>{asset.name}</strong>
+                            <small>{fileSizeLabel(asset.byteCount)} · {asset.uploadedByName}</small>
+                          </div>
+                          <div className="asset-card__actions">
+                            <a href={`${assetUrl}&download=1`}>download</a>
+                            {asset.canDelete && (
+                              <button
+                                type="button"
+                                onClick={() => void removeAsset(asset)}
+                                disabled={Boolean(busy)}
+                              >
+                                {busy === `asset-delete-${asset.id}` ? "removing…" : "remove"}
+                              </button>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="asset-empty">
+                    <span>▧</span>
+                    <h3>No {assetKindFilter === "all" ? "assets" : `${assetKindFilter} assets`} in this branch yet</h3>
+                    <p>Upload PNG, JPEG, WebP, GIF, MP3, OGG, WAV, or M4A files up to 5 MB each.</p>
+                    <button type="button" onClick={() => assetFileInput.current?.click()} disabled={Boolean(busy)}>
+                      choose files →
+                    </button>
+                  </div>
+                )}
+              </section>
             )}
             {activeTab === "code" && visibleBuild && (
               <div className="source-workspace">
@@ -2041,7 +2213,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 ))}
               </div>
             )}
-            {!visibleBuild && activeTab !== "activity" && activeTab !== "diff" && activeTab !== "showcase" && activeTab !== "forks" && (
+            {!visibleBuild && activeTab !== "activity" && activeTab !== "diff" && activeTab !== "showcase" && activeTab !== "forks" && activeTab !== "assets" && (
               <div className="empty-build">The first published artifact will appear here.</div>
             )}
           </div>

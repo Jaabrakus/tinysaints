@@ -85,7 +85,7 @@ test("uses canonical server context and fails honestly without Kimi", async () =
 });
 
 test("keeps secrets server-side and generated code inside an opaque sandbox", async () => {
-  const [client, artifact, hosting, migration, sourceMigration, workspaceMigration, agentMigration, agentRoute, mcpRoute, notices] = await Promise.all([
+  const [client, artifact, hosting, migration, sourceMigration, workspaceMigration, agentMigration, assetMigration, agentRoute, assetRoute, mcpRoute, notices] = await Promise.all([
     source("../app/RoomClient.tsx"),
     source("../lib/starter-artifact.ts"),
     source("../.openai/hosting.json"),
@@ -93,7 +93,9 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
     source("../drizzle/0001_collaborative_source.sql"),
     source("../drizzle/0002_previous_krista_starr.sql"),
     source("../drizzle/0003_complex_skaar.sql"),
+    source("../drizzle/0004_flat_clea.sql"),
     source("../app/api/agent/route.ts"),
+    source("../app/api/assets/route.ts"),
     source("../app/api/mcp/route.ts"),
     source("../THIRD_PARTY_NOTICES.md"),
   ]);
@@ -107,6 +109,7 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
   assert.match(artifact, /script-src 'nonce-\$\{scriptNonce\}'/);
   assert.match(artifact, /forbiddenJavascript/);
   assert.match(hosting, /"d1": "DB"/);
+  assert.match(hosting, /"r2": "UPLOADS"/);
   assert.match(migration, /CREATE TABLE `rooms`/);
   assert.match(migration, /CREATE TABLE `messages`/);
   assert.match(migration, /CREATE TABLE `builds`/);
@@ -117,6 +120,10 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
   assert.match(workspaceMigration, /ADD `agent_label`/);
   assert.match(workspaceMigration, /__new_build_files/);
   assert.match(agentMigration, /CREATE TABLE `agent_tokens`/);
+  assert.match(assetMigration, /CREATE TABLE `project_assets`/);
+  assert.match(assetRoute, /env\.UPLOADS/);
+  assert.match(assetRoute, /5 \* 1024 \* 1024/);
+  assert.match(assetRoute, /getProjectAssetRecord/);
   assert.match(agentRoute, /authenticateAgentToken/);
   assert.match(agentRoute, /stageAgentProjectPatch/);
   assert.match(mcpRoute, /submit_project_patch/);

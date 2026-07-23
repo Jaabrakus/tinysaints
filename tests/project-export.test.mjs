@@ -35,10 +35,23 @@ test("exports a deterministic Git-ready project with a dependency-free runner", 
       { path: "styles.css", content: "main{}", language: "css" },
       { path: "src/app.js", content: "console.log('ready')", language: "javascript" },
     ],
+    assets: [
+      {
+        path: "assets/uploads/12345678-player.png",
+        name: "player.png",
+        kind: "image",
+        contentType: "image/png",
+        sha256: "a".repeat(64),
+        content: new TextEncoder().encode("PNGDATA"),
+      },
+    ],
   });
   const files = tarFiles(archive);
   assert.equal(files.get("index.html"), "<main>hello</main>");
   assert.match(files.get("make-room.json"), /"revision": 7/);
+  assert.match(files.get("make-room.json"), /"schemaVersion": 2/);
+  assert.match(files.get("make-room.json"), /assets\/uploads\/12345678-player\.png/);
+  assert.equal(files.get("assets/uploads/12345678-player.png"), "PNGDATA");
   assert.match(files.get("package.json"), /node tools\/dev\.mjs/);
   assert.match(files.get("tools/dev.mjs"), /createServer/);
   assert.match(files.get(".gitignore"), /node_modules/);

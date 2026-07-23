@@ -167,6 +167,40 @@ export const buildFiles = sqliteTable(
   ],
 );
 
+export const projectAssets = sqliteTable(
+  "project_assets",
+  {
+    id: text("id").primaryKey(),
+    roomId: text("room_id")
+      .notNull()
+      .references(() => rooms.id, { onDelete: "cascade" }),
+    uploadedBy: text("uploaded_by")
+      .notNull()
+      .references(() => users.id),
+    sourceAssetId: text("source_asset_id"),
+    name: text("name").notNull(),
+    kind: text("kind").notNull(),
+    contentType: text("content_type").notNull(),
+    objectKey: text("object_key").notNull(),
+    sha256: text("sha256").notNull(),
+    byteCount: integer("byte_count").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("project_assets_room_idx").on(table.roomId, table.createdAt),
+    index("project_assets_object_idx").on(table.objectKey),
+    check("project_assets_kind_check", sql`${table.kind} IN ('image', 'audio')`),
+    check(
+      "project_assets_byte_count_check",
+      sql`${table.byteCount} > 0 AND ${table.byteCount} <= 5242880`,
+    ),
+    check(
+      "project_assets_sha256_check",
+      sql`length(${table.sha256}) = 64 AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+  ],
+);
+
 export const votes = sqliteTable(
   "votes",
   {

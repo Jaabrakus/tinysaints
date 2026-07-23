@@ -112,6 +112,38 @@ test("upgrades the deployed schema with immutable source snapshots", async () =>
   database.prepare("DELETE FROM users WHERE id = ?").run("user-agent");
   assert.equal(database.prepare("SELECT count(*) AS count FROM agent_tokens").get().count, 0);
 
+  database.exec(await migration("0004_flat_clea.sql"));
+  const assetColumns = database.prepare("PRAGMA table_info(project_assets)").all();
+  assert.ok(assetColumns.some((column) => column.name === "object_key"));
+  const insertAsset = database.prepare(
+    "INSERT INTO project_assets (id, room_id, uploaded_by, name, kind, content_type, object_key, sha256, byte_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  );
+  insertAsset.run(
+    "asset-1",
+    "room-1",
+    "user-1",
+    "player.png",
+    "image",
+    "image/png",
+    "objects/asset-one",
+    "a".repeat(64),
+    1024,
+  );
+  assert.throws(
+    () => insertAsset.run(
+      "asset-2",
+      "room-1",
+      "user-1",
+      "bad.bin",
+      "binary",
+      "application/octet-stream",
+      "objects/asset-two",
+      "b".repeat(64),
+      1024,
+    ),
+    /CHECK constraint failed/,
+  );
+
   database.prepare("DELETE FROM builds WHERE id = ?").run("build-1");
   assert.equal(
     database.prepare("SELECT count(*) AS count FROM build_files").get().count,

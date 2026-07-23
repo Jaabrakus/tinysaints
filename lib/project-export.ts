@@ -25,8 +25,8 @@ function tarName(path: string) {
   return { name, prefix };
 }
 
-function tarEntry(path: string, content: string) {
-  const body = encoder.encode(content);
+function tarEntry(path: string, content: string | Uint8Array) {
+  const body = typeof content === "string" ? encoder.encode(content) : content;
   const header = new Uint8Array(512);
   const split = tarName(path);
   writeText(header, 0, 100, split.name);
@@ -57,7 +57,7 @@ import { extname, resolve } from "node:path";
 
 const root = process.cwd();
 const port = Number(process.env.PORT || 4173);
-const types = { ".css": "text/css", ".js": "text/javascript", ".json": "application/json", ".md": "text/markdown" };
+const types = { ".css": "text/css", ".js": "text/javascript", ".json": "application/json", ".md": "text/markdown", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".wav": "audio/wav", ".m4a": "audio/mp4" };
 
 async function preview() {
   const [body, css, script] = await Promise.all([
@@ -95,14 +95,32 @@ export function makeProjectTar(input: {
   version: number;
   status: string;
   files: ArtifactSourceFile[];
+  assets?: Array<{
+    path: string;
+    name: string;
+    kind: string;
+    contentType: string;
+    sha256: string;
+    content: Uint8Array;
+  }>;
 }) {
-  const files = new Map(input.files.map((file) => [file.path, file.content]));
+  const files = new Map<string, string | Uint8Array>(
+    input.files.map((file) => [file.path, file.content]),
+  );
+  for (const asset of input.assets ?? []) files.set(asset.path, asset.content);
   files.set("make-room.json", JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     room: input.slug,
     revision: input.revision,
     build: { id: input.buildId, version: input.version, status: input.status },
     entrypoints: { html: "index.html", css: "styles.css", javascript: "src/app.js" },
+    assets: (input.assets ?? []).map((asset) => ({
+      path: asset.path,
+      name: asset.name,
+      kind: asset.kind,
+      contentType: asset.contentType,
+      sha256: asset.sha256,
+    })),
   }, null, 2) + "\n");
   if (!files.has(".gitignore")) files.set(".gitignore", "node_modules\n.env\n.env.*\ndist\n.DS_Store\n");
   if (!files.has("package.json")) files.set("package.json", JSON.stringify({

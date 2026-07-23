@@ -6,6 +6,7 @@ import {
   buildFiles,
   builds,
   messages,
+  projectAssets,
   roomMembers,
   rooms,
   users,
@@ -50,6 +51,8 @@ export type GeneratedArtifact = {
 };
 
 const MAX_BUILDS_PER_ROOM = 500;
+const MAX_ASSETS_PER_ROOM = 60;
+const MAX_ROOM_ASSET_BYTES = 25 * 1024 * 1024;
 
 function nowSql() {
   return sql`CURRENT_TIMESTAMP`;
@@ -436,6 +439,168 @@ async function getRoomForUser(slugValue: string, identity: Identity) {
   return room;
 }
 
+export type ProjectAssetKind = "image" | "audio";
+
+function normalizeAssetName(value: string) {
+  return value
+    .replace(/[\\/\u0000-\u001f\u007f]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 100);
+}
+
+function serializeAsset(asset: typeof projectAssets.$inferSelect, uploaderName?: string) {
+  return {
+    id: asset.id,
+    name: asset.name,
+    kind: asset.kind as ProjectAssetKind,
+    contentType: asset.contentType,
+    byteCount: asset.byteCount,
+    sha256: asset.sha256,
+    sourceAssetId: asset.sourceAssetId,
+    uploadedBy: asset.uploadedBy,
+    uploadedByName: uploaderName ?? "Maker",
+    createdAt: asset.createdAt,
+  };
+}
+
+export async function createProjectAssetRecord(
+  slugValue: string,
+  identity: Identity,
+  input: {
+    name: string;
+    kind: ProjectAssetKind;
+    contentType: string;
+    objectKey: string;
+    sha256: string;
+    byteCount: number;
+  },
+) {
+  const room = await getRoomForUser(slugValue, identity);
+  const name = normalizeAssetName(input.name);
+  if (!name) throw new RoomError("Give the asset a file name.");
+  if (!/^[0-9a-f]{64}$/.test(input.sha256) || input.objectKey !== `objects/${input.sha256}`) {
+    throw new RoomError("The uploaded asset failed its integrity check.");
+  }
+  if (!Number.isInteger(input.byteCount) || input.byteCount < 1 || input.byteCount > 5 * 1024 * 1024) {
+    throw new RoomError("Assets must be between 1 byte and 5 MB.", 413);
+  }
+
+  const db = getDb();
+  const [existing, totals] = await Promise.all([
+    db
+      .select()
+      .from(projectAssets)
+      .where(and(eq(projectAssets.roomId, room.id), eq(projectAssets.sha256, input.sha256)))
+      .limit(1),
+    db
+      .select({
+        count: sql<number>`count(*)`,
+        bytes: sql<number>`coalesce(sum(${projectAssets.byteCount}), 0)`,
+      })
+      .from(projectAssets)
+      .where(eq(projectAssets.roomId, room.id)),
+  ]);
+  if (existing[0]) return serializeAsset(existing[0], identity.displayName);
+  if (Number(totals[0]?.count ?? 0) >= MAX_ASSETS_PER_ROOM) {
+    throw new RoomError("This room already has 60 assets. Remove one before uploading another.", 409);
+  }
+  if (Number(totals[0]?.bytes ?? 0) + input.byteCount > MAX_ROOM_ASSET_BYTES) {
+    throw new RoomError("This room reached its 25 MB shared asset limit.", 413);
+  }
+
+  const asset = {
+    id: crypto.randomUUID(),
+    roomId: room.id,
+    uploadedBy: identity.id,
+    sourceAssetId: null,
+    name,
+    kind: input.kind,
+    contentType: input.contentType,
+    objectKey: input.objectKey,
+    sha256: input.sha256,
+    byteCount: input.byteCount,
+  };
+  await db.batch([
+    db.insert(projectAssets).values(asset),
+    db
+      .update(rooms)
+      .set({ updatedAt: nowSql(), revision: sql`${rooms.revision} + 1` })
+      .where(eq(rooms.id, room.id)),
+  ]);
+  return serializeAsset({ ...asset, createdAt: new Date().toISOString() }, identity.displayName);
+}
+
+export async function getProjectAssetRecord(
+  slugValue: string,
+  identity: Identity,
+  assetId: string,
+) {
+  const room = await getRoomForUser(slugValue, identity);
+  const [asset] = await getDb()
+    .select()
+    .from(projectAssets)
+    .where(and(eq(projectAssets.id, assetId.trim()), eq(projectAssets.roomId, room.id)))
+    .limit(1);
+  if (!asset) throw new RoomError("That asset is not in this room.", 404);
+  return asset;
+}
+
+export async function deleteProjectAssetRecord(
+  slugValue: string,
+  identity: Identity,
+  assetId: string,
+) {
+  const room = await getRoomForUser(slugValue, identity);
+  const asset = await getProjectAssetRecord(slugValue, identity, assetId);
+  if (asset.uploadedBy !== identity.id && room.ownerId !== identity.id) {
+    throw new RoomError("Only the uploader or room owner can remove this asset.", 403);
+  }
+  const db = getDb();
+  await db.batch([
+    db
+      .delete(projectAssets)
+      .where(and(eq(projectAssets.id, asset.id), eq(projectAssets.roomId, room.id))),
+    db
+      .update(rooms)
+      .set({ updatedAt: nowSql(), revision: sql`${rooms.revision} + 1` })
+      .where(eq(rooms.id, room.id)),
+  ]);
+  const [remaining] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(projectAssets)
+    .where(eq(projectAssets.objectKey, asset.objectKey));
+  return { objectKey: asset.objectKey, orphaned: Number(remaining?.count ?? 0) === 0 };
+}
+
+async function copyProjectAssets(sourceRoomId: string, targetRoomId: string) {
+  const db = getDb();
+  const [sourceRows, targetRows] = await Promise.all([
+    db.select().from(projectAssets).where(eq(projectAssets.roomId, sourceRoomId)),
+    db
+      .select({ sha256: projectAssets.sha256 })
+      .from(projectAssets)
+      .where(eq(projectAssets.roomId, targetRoomId)),
+  ]);
+  const targetHashes = new Set(targetRows.map((asset) => asset.sha256));
+  const additions = sourceRows.filter((asset) => !targetHashes.has(asset.sha256));
+  if (additions.length === 0) return;
+  await db.insert(projectAssets).values(
+    additions.map((asset) => ({
+      id: crypto.randomUUID(),
+      roomId: targetRoomId,
+      uploadedBy: asset.uploadedBy,
+      sourceAssetId: asset.sourceAssetId ?? asset.id,
+      name: asset.name,
+      kind: asset.kind,
+      contentType: asset.contentType,
+      objectKey: asset.objectKey,
+      sha256: asset.sha256,
+      byteCount: asset.byteCount,
+    })),
+  );
+}
+
 export async function getHomeRoomState(identity: Identity) {
   await ensureDatabase();
   await upsertUser(identity);
@@ -643,6 +808,7 @@ export async function getRoomState(slugValue: string, identity: Identity) {
     parentRoomRows,
     branchRoomRows,
     personalAgentRows,
+    assetRows,
   ] = await Promise.all([
       db
         .select({
@@ -748,6 +914,16 @@ export async function getRoomState(slugValue: string, identity: Identity) {
         .where(eq(agentTokens.userId, identity.id))
         .orderBy(desc(agentTokens.createdAt))
         .limit(12),
+      db
+        .select({
+          asset: projectAssets,
+          uploaderName: users.displayName,
+        })
+        .from(projectAssets)
+        .innerJoin(users, eq(projectAssets.uploadedBy, users.id))
+        .where(eq(projectAssets.roomId, room.id))
+        .orderBy(desc(projectAssets.createdAt), desc(projectAssets.id))
+        .limit(MAX_ASSETS_PER_ROOM),
     ]);
 
   const published = activeBuildRows.find((build) => build.status === "published");
@@ -842,6 +1018,10 @@ export async function getRoomState(slugValue: string, identity: Identity) {
     })),
     votes: { count: voteCount, myVote, threshold, voterIds },
     agentTokens: personalAgentRows,
+    assets: assetRows.map((row) => ({
+      ...serializeAsset(row.asset, row.uploaderName),
+      canDelete: row.asset.uploadedBy === identity.id || room.ownerId === identity.id,
+    })),
     model: {
       configured: isKimiConfigured(),
       name: process.env.AI_MODEL ?? "kimi-k3",
@@ -852,7 +1032,7 @@ export async function getRoomState(slugValue: string, identity: Identity) {
 export async function getAgentProjectSnapshot(slugValue: string, identity: Identity) {
   const room = await getRoomForUser(slugValue, identity);
   const db = getDb();
-  const [activeRows, messageRows] = await Promise.all([
+  const [activeRows, messageRows, assetRows] = await Promise.all([
     db
       .select()
       .from(builds)
@@ -874,6 +1054,11 @@ export async function getAgentProjectSnapshot(slugValue: string, identity: Ident
       .where(eq(messages.roomId, room.id))
       .orderBy(desc(messages.createdAt))
       .limit(30),
+    db
+      .select()
+      .from(projectAssets)
+      .where(eq(projectAssets.roomId, room.id))
+      .orderBy(desc(projectAssets.createdAt)),
   ]);
   const base = activeRows.find((build) => build.status === "staged") ??
     activeRows.find((build) => build.status === "published");
@@ -900,6 +1085,10 @@ export async function getAgentProjectSnapshot(slugValue: string, identity: Ident
       byteCount: file.byteCount,
     })),
     recentConversation: messageRows.reverse(),
+    assets: assetRows.map((asset) => ({
+      ...serializeAsset(asset),
+      readEndpoint: `/api/assets?room=${encodeURIComponent(room.slug)}&asset=${encodeURIComponent(asset.id)}`,
+    })),
     submit: {
       method: "POST",
       endpoint: "/api/agent",
@@ -935,6 +1124,11 @@ export async function getExportProjectSnapshot(
     room: { slug: room.slug, name: room.name, revision: room.revision },
     build: { id: build.id, version: build.version, status: build.status },
     files: asArtifactSourceFiles(await ensureBuildFiles(build)),
+    assets: await db
+      .select()
+      .from(projectAssets)
+      .where(eq(projectAssets.roomId, room.id))
+      .orderBy(asc(projectAssets.name), asc(projectAssets.id)),
   };
 }
 
@@ -1556,6 +1750,7 @@ export async function forkRoom(slugValue: string, identity: Identity) {
     }),
     db.insert(buildFiles).values(forkFileRows),
   ]);
+  await copyProjectAssets(sourceRoom.id, id);
   return slug;
 }
 
@@ -1711,9 +1906,18 @@ export async function mergeForkToParent(
     ensureBuildFiles(parentWorking).then(asArtifactSourceFiles),
     ensureBuildFiles(branchPublished).then(asArtifactSourceFiles),
   ]);
+  const [branchAssetRows, parentAssetRows] = await Promise.all([
+    db.select().from(projectAssets).where(eq(projectAssets.roomId, branchRoom.id)),
+    db
+      .select({ sha256: projectAssets.sha256 })
+      .from(projectAssets)
+      .where(eq(projectAssets.roomId, parentRoom.id)),
+  ]);
+  const parentAssetHashes = new Set(parentAssetRows.map((asset) => asset.sha256));
+  const newBranchAssets = branchAssetRows.filter((asset) => !parentAssetHashes.has(asset.sha256));
   const merge = mergeForkSourceSnapshots(ancestorFiles, parentFiles, branchFiles);
-  if (merge.branchChangedPaths.length === 0) {
-    throw new RoomError("This fork has no published source changes to combine yet.", 409);
+  if (merge.branchChangedPaths.length === 0 && newBranchAssets.length === 0) {
+    throw new RoomError("This fork has no published source or asset changes to combine yet.", 409);
   }
   if (merge.conflicts.length > 0) {
     throw new RoomError(
@@ -1723,7 +1927,7 @@ export async function mergeForkToParent(
       409,
     );
   }
-  if (merge.mergedPaths.length === 0) {
+  if (merge.mergedPaths.length === 0 && newBranchAssets.length === 0) {
     throw new RoomError("The parent already contains this fork's published changes.", 409);
   }
 
@@ -1763,7 +1967,9 @@ export async function mergeForkToParent(
       WHERE branch_stage.room_id = ${branchRoom.id}
         AND branch_stage.status = 'staged'
     )`;
-  const mergedPathLabel = merge.mergedPaths.join(" and ");
+  const mergedPathLabel = merge.mergedPaths.length > 0
+    ? merge.mergedPaths.join(" and ")
+    : `${newBranchAssets.length} shared asset${newBranchAssets.length === 1 ? "" : "s"}`;
   const stagedBuild = db
     .select({
       id: sql<string>`${buildId}`.as("id"),
@@ -1778,6 +1984,9 @@ export async function mergeForkToParent(
       summary: sql<string>`${`Combined ${mergedPathLabel} from fork v${branchPublished.version}.`}`.as("summary"),
       changesJson: sql<string>`${JSON.stringify([
         ...merge.mergedPaths.map((path) => `Merged ${path} from ${branchRoom.name}`),
+        ...(newBranchAssets.length > 0
+          ? [`Carried ${newBranchAssets.length} new game asset${newBranchAssets.length === 1 ? "" : "s"} into the parent library`]
+          : []),
         "Preserved non-overlapping work already in the parent",
         "Created one reviewable convergence snapshot",
       ])}`.as("changes_json"),
@@ -1864,6 +2073,8 @@ export async function mergeForkToParent(
       409,
     );
   }
+
+  await copyProjectAssets(branchRoom.id, parentRoom.id);
 
   return parentRoom.slug;
 }

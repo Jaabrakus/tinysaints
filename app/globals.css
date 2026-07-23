@@ -1487,6 +1487,267 @@ textarea:focus-visible {
   font: 7px/1.4 var(--font-code);
 }
 
+.asset-library {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  background: #11120f;
+}
+
+.asset-library__header {
+  display: flex;
+  min-height: 96px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(105deg, rgb(202 255 69 / 0.055), transparent 52%), #151613;
+}
+
+.asset-library__header > div:first-child {
+  min-width: 0;
+}
+
+.asset-library__header > div:first-child > span {
+  color: var(--lime);
+  font: 680 8px var(--font-code);
+  letter-spacing: 0.09em;
+}
+
+.asset-library__header h3,
+.asset-empty h3 {
+  margin: 5px 0 3px;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 560;
+  letter-spacing: -0.035em;
+}
+
+.asset-library__header p,
+.asset-empty p {
+  max-width: 520px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.asset-library__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.asset-filters {
+  display: flex;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #0f100e;
+}
+
+.asset-filters button {
+  min-height: 25px;
+  padding: 0 8px;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--faint);
+  font: 7px var(--font-code);
+  text-transform: uppercase;
+}
+
+.asset-filters button.is-active {
+  background: var(--ink-selected);
+  color: var(--text);
+}
+
+.asset-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.asset-upload-button,
+.asset-empty button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgb(202 255 69 / 0.34);
+  border-radius: 7px;
+  background: rgb(202 255 69 / 0.08);
+  color: var(--lime);
+  font: 8px var(--font-code);
+}
+
+.asset-upload-button:hover:not(:disabled),
+.asset-empty button:hover:not(:disabled) {
+  background: var(--lime);
+  color: #151711;
+}
+
+.asset-grid {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.asset-card {
+  display: flex;
+  min-width: 0;
+  min-height: 210px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #171815;
+}
+
+.asset-card__preview {
+  display: grid;
+  min-height: 120px;
+  flex: 1;
+  place-items: center;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+  background:
+    linear-gradient(45deg, #171815 25%, transparent 25%),
+    linear-gradient(-45deg, #171815 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #171815 75%),
+    linear-gradient(-45deg, transparent 75%, #171815 75%),
+    #1d1f1a;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+
+.asset-card__preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: 180px;
+  object-fit: contain;
+}
+
+.asset-card__preview--audio {
+  min-height: 120px;
+  background: radial-gradient(circle at 50% 30%, rgb(157 140 255 / 0.16), transparent 45%), #121310;
+}
+
+.asset-card__preview--audio > div {
+  display: grid;
+  width: 100%;
+  place-items: center;
+  gap: 12px;
+  padding: 14px;
+}
+
+.asset-card__preview--audio span {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid rgb(157 140 255 / 0.35);
+  border-radius: 50%;
+  color: var(--violet);
+  font-size: 17px;
+}
+
+.asset-card__preview audio {
+  width: 100%;
+  height: 28px;
+}
+
+.asset-card__body {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 9px 10px 7px;
+}
+
+.asset-card__body > span {
+  color: var(--violet);
+  font: 650 7px var(--font-code);
+  letter-spacing: 0.06em;
+}
+
+.asset-card__body strong {
+  overflow: hidden;
+  color: #d0d2ca;
+  font-size: 10px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-card__body small {
+  overflow: hidden;
+  color: var(--faint);
+  font: 7px var(--font-code);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px 9px;
+}
+
+.asset-card__actions a,
+.asset-card__actions button {
+  padding: 4px 0;
+  background: transparent;
+  color: var(--muted);
+  font: 7px var(--font-code);
+  text-decoration: none;
+}
+
+.asset-card__actions a:hover {
+  color: var(--lime);
+}
+
+.asset-card__actions button {
+  color: var(--coral);
+}
+
+.asset-empty {
+  display: grid;
+  max-width: 430px;
+  margin: auto;
+  place-items: center;
+  padding: 30px;
+  text-align: center;
+}
+
+.asset-empty > span {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 8px;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  color: var(--lime);
+  font-size: 19px;
+}
+
+.asset-empty button {
+  margin-top: 14px;
+}
+
 .status-dot {
   width: 5px;
   height: 5px;
@@ -3266,6 +3527,21 @@ a.fork-node:hover {
     grid-template-columns: 1fr;
   }
 
+  .asset-library__header {
+    min-height: 126px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .asset-library__actions {
+    justify-content: space-between;
+  }
+
+  .asset-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  }
+
   .source-editor__gutter,
   .source-editor__input textarea {
     font-size: 10px;
@@ -3347,6 +3623,26 @@ a.fork-node:hover {
 
   .sandbox-label {
     display: none;
+  }
+
+  .studio-lanes > small,
+  .asset-library__header p {
+    display: none;
+  }
+
+  .asset-library__header {
+    min-height: 104px;
+    padding: 10px;
+  }
+
+  .asset-filters button {
+    padding: 0 6px;
+  }
+
+  .asset-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 7px;
+    padding: 8px;
   }
 
   .source-workspace {
