@@ -9,7 +9,7 @@ type Color = "lime" | "violet" | "coral" | "sky" | "cream";
 type SourcePath = string;
 type RoomActionValue = string | number | boolean | null;
 type ProjectKind = "game" | "app";
-type WorkspaceTab = "board" | "preview" | "code" | "assets" | "forks" | "diff" | "showcase" | "activity";
+type WorkspaceTab = "board" | "repository" | "preview" | "code" | "assets" | "forks" | "diff" | "showcase" | "activity";
 type MobileView = "rooms" | "chat" | "build" | "ai";
 
 type SourceFile = {
@@ -142,6 +142,7 @@ type EditorStatus = {
 
 type RuntimeMessage = { level: "ready" | "log" | "warn" | "error"; text: string };
 type InspectedElement = { tag: string; id: string; className: string; text: string };
+type CoreRepository = { repository: string; branch: string; files: Array<{ path: string; sha: string; byteCount: number }> };
 
 type Contribution = {
   id: string;
@@ -389,6 +390,14 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [boardTitle, setBoardTitle] = useState("");
   const [boardDetails, setBoardDetails] = useState("");
   const [releaseResult, setReleaseResult] = useState<string | null>(null);
+  const [coreRepository, setCoreRepository] = useState<CoreRepository | null>(null);
+  const [corePath, setCorePath] = useState("");
+  const [coreContent, setCoreContent] = useState("");
+  const [coreOriginal, setCoreOriginal] = useState("");
+  const [coreDrafts, setCoreDrafts] = useState<Record<string, string>>({});
+  const [coreProposalTitle, setCoreProposalTitle] = useState("");
+  const [coreProposalSummary, setCoreProposalSummary] = useState("");
+  const [coreProposalResult, setCoreProposalResult] = useState<{ contributionId: string; branch: string; commitUrl: string; validation: string } | null>(null);
   const [newFileOpen, setNewFileOpen] = useState(false);
   const [newFilePath, setNewFilePath] = useState("");
   const [assetKindFilter, setAssetKindFilter] = useState<"all" | "image" | "audio">("all");
@@ -481,6 +490,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
             ? current
             : nextState,
         );
+        setActiveTab((current) => nextState.room.isCore && current === "code" ? "repository" : current);
         if (!slug && !inviteToken) {
           window.history.replaceState({}, "", `/?room=${encodeURIComponent(nextState.room.slug)}`);
         }
@@ -598,7 +608,15 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   }
 
   useEffect(() => {
-    if ((contextOpen || activeTab === "board") && slug) void loadContributions("");
+    if (!(contextOpen || activeTab === "board") || !slug) return;
+    const controller = new AbortController();
+    void fetch(`/api/contributions?room=${encodeURIComponent(slug)}&q=`, { cache: "no-store", signal: controller.signal })
+      .then((response) => readResponse<Contribution[]>(response))
+      .then(setContributions)
+      .catch((loadError) => {
+        if (loadError instanceof Error && loadError.name !== "AbortError") setError(loadError.message);
+      });
+    return () => controller.abort();
   }, [contextOpen, activeTab, slug]);
 
   async function addBoardItem(event: FormEvent<HTMLFormElement>) {
@@ -633,8 +651,8 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     }
   }
 
-  async function releaseCore() {
-    if (!state?.room.isCore || !state.published || state.staged || busy) return;
+  async function releaseCore(contributionId: string) {
+    if (!state?.room.isCore || busy) return;
     setBusy("core-release");
     setError(null);
     setReleaseResult(null);
@@ -642,13 +660,76 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       const response = await fetch("/api/releases", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ room: slug, buildId: state.published.id }),
+        body: JSON.stringify({ room: slug, contributionId }),
       });
       const result = await readResponse<{ commitUrl: string; commitSha: string }>(response);
       setReleaseResult(result.commitUrl);
       setNotice(`Core release ${result.commitSha.slice(0, 7)} pushed · hosting can deploy automatically`);
     } catch (releaseError) {
       setError(releaseError instanceof Error ? releaseError.message : "The core release could not be promoted.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function loadCoreRepository() {
+    if (!state?.room.isCore || busy) return;
+    setBusy("core-tree");
+    setError(null);
+    try {
+      const response = await fetch("/api/core", { cache: "no-store" });
+      const repository = await readResponse<CoreRepository>(response);
+      setCoreRepository(repository);
+      if (!corePath && repository.files[0]) await openCoreFile(repository.files[0].path);
+    } catch (coreError) {
+      setError(coreError instanceof Error ? coreError.message : "The Core repository could not load.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function openCoreFile(path: string) {
+    if (corePath && coreContent !== coreOriginal) setCoreDrafts((current) => ({ ...current, [corePath]: coreContent }));
+    setBusy("core-file");
+    setError(null);
+    try {
+      const response = await fetch(`/api/core?path=${encodeURIComponent(path)}`, { cache: "no-store" });
+      const file = await readResponse<{ path: string; content: string }>(response);
+      setCorePath(file.path);
+      setCoreOriginal(file.content);
+      setCoreContent(coreDrafts[file.path] ?? file.content);
+    } catch (coreError) {
+      setError(coreError instanceof Error ? coreError.message : "That repository file could not load.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitCoreProposal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!coreProposalTitle.trim() || busy) return;
+    const drafts = { ...coreDrafts };
+    if (corePath && coreContent !== coreOriginal) drafts[corePath] = coreContent;
+    const changes = Object.entries(drafts).map(([path, content]) => ({ path, content }));
+    if (!changes.length) { setError("Change at least one repository file before proposing it."); return; }
+    setBusy("core-proposal");
+    setError(null);
+    try {
+      const response = await fetch("/api/core", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: coreProposalTitle, summary: coreProposalSummary, changes }),
+      });
+      const result = await readResponse<{ contributionId: string; branch: string; commitUrl: string; validation: string }>(response);
+      setCoreProposalResult(result);
+      setCoreDrafts({});
+      setCoreProposalTitle("");
+      setCoreProposalSummary("");
+      setCoreOriginal(coreContent);
+      setNotice(`Proposal branch ${result.branch} created · ${result.validation === "dispatched" ? "isolated checks dispatched" : "validation workflow needs configuration"}`);
+      void loadContributions("");
+    } catch (coreError) {
+      setError(coreError instanceof Error ? coreError.message : "The repository proposal could not be created.");
     } finally {
       setBusy(null);
     }
@@ -1376,7 +1457,9 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const projectKind = projectKindFor(visibleBuild);
   const isGameProject = projectKind === "game";
   const runtimeEntry = runtimeEntryFor(visibleBuild);
-  const workspaceTabs: WorkspaceTab[] = isGameProject
+  const workspaceTabs: WorkspaceTab[] = state?.room.isCore
+    ? ["board", "repository", "forks", "showcase", "activity"]
+    : isGameProject
     ? ["board", "preview", "code", "assets", "forks", "diff", "showcase", "activity"]
     : ["board", "preview", "code", "forks", "diff", "showcase", "activity"];
   const boardItems = contributions.filter((item) => item.providerLabel === "Team board" && item.visibility !== "private");
@@ -2324,16 +2407,43 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 </footer>
                 {state.room.isCore && (
                   <section className="core-release-gate">
-                    <div><span>PROTECTED CORE STUDIO</span><h4>Release make/room from make/room</h4><p>Only a shipped, majority-backed build reaches the repository bridge. Git remains the audit trail; nobody has to push it manually.</p></div>
-                    <ol>
-                      <li className={state.showcase.length ? "is-ready" : ""}>competing forks compared</li>
-                      <li className={!state.staged ? "is-ready" : ""}>proposal shipped by the room</li>
-                      <li className={state.published ? "is-ready" : ""}>immutable release snapshot</li>
-                    </ol>
-                    <button type="button" onClick={() => void releaseCore()} disabled={Boolean(busy) || Boolean(state.staged) || !state.published}>{busy === "core-release" ? "promoting…" : "release make/room ↑"}</button>
+                    <div><span>PROTECTED CORE STUDIO</span><h4>Release make/room from make/room</h4><p>Repository proposals need useful backing from a majority of studio members. Promotion is a non-force fast-forward; stale branches cannot overwrite newer work.</p></div>
+                    <ol>{contributions.filter((item) => item.providerLabel === "Core repository").slice(0, 4).map((item) => {
+                      const backing = item.reactions.filter((reaction) => reaction.reaction === "useful").length;
+                      return <li className={backing >= state.votes.threshold ? "is-ready" : ""} key={item.id}>{item.title} · {backing}/{state.votes.threshold}</li>;
+                    })}</ol>
+                    <div className="core-release-gate__actions">{contributions.filter((item) => item.providerLabel === "Core repository").slice(0, 4).map((item) => {
+                      const backing = item.reactions.filter((reaction) => reaction.reaction === "useful").length;
+                      return <button type="button" onClick={() => void releaseCore(item.id)} disabled={Boolean(busy) || backing < state.votes.threshold} key={item.id}>{busy === "core-release" ? "promoting…" : `promote ${item.title} ↑`}</button>;
+                    })}</div>
                     {releaseResult && <a href={releaseResult} target="_blank" rel="noreferrer">open release commit ↗</a>}
                   </section>
                 )}
+              </section>
+            )}
+            {activeTab === "repository" && state?.room.isCore && (
+              <section className="core-repository" aria-label="Make Room Core repository">
+                <header>
+                  <div><span>LIVE CORE REPOSITORY</span><h3>{coreRepository?.repository ?? "Connect the make/room repository"}</h3><p>{coreRepository ? `${coreRepository.branch} · ${coreRepository.files.length} editable text files` : "The protected token stays on the server."}</p></div>
+                  <button type="button" onClick={() => void loadCoreRepository()} disabled={Boolean(busy)}>{busy === "core-tree" ? "syncing…" : coreRepository ? "refresh tree" : "connect repository →"}</button>
+                </header>
+                {coreRepository ? <div className="core-repository__workspace">
+                  <aside>
+                    <div><strong>FILES</strong><small>{Object.keys(coreDrafts).length + (corePath && coreContent !== coreOriginal && !(corePath in coreDrafts) ? 1 : 0)} changed</small></div>
+                    <nav>{coreRepository.files.map((file) => <button type="button" className={`${file.path === corePath ? "is-active" : ""} ${coreDrafts[file.path] !== undefined ? "is-dirty" : ""}`} onClick={() => void openCoreFile(file.path)} key={file.path}><span>{file.path.split("/").at(-1)}</span><small>{file.path}</small></button>)}</nav>
+                  </aside>
+                  <div className="core-repository__editor">
+                    <div><span>{corePath || "Select a file"}</span>{coreContent !== coreOriginal && <b>UNSAVED PROPOSAL</b>}</div>
+                    {corePath ? <Editor height="100%" theme="vs-dark" path={`core/${corePath}`} language={languageForPath(corePath)} value={coreContent} onChange={(value) => setCoreContent(value ?? "")} options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: "off", automaticLayout: true, scrollBeyondLastLine: false }} /> : <p>Choose a source file from the repository tree.</p>}
+                  </div>
+                  <form className="core-proposal" onSubmit={submitCoreProposal}>
+                    <span>PROPOSE A CORE BRANCH</span>
+                    <input value={coreProposalTitle} onChange={(event) => setCoreProposalTitle(event.target.value)} maxLength={100} placeholder="What does this change?" />
+                    <textarea value={coreProposalSummary} onChange={(event) => setCoreProposalSummary(event.target.value)} maxLength={1600} rows={3} placeholder="Why should the global room test and back it?" />
+                    <button type="submit" disabled={!coreProposalTitle.trim() || Boolean(busy)}>{busy === "core-proposal" ? "creating branch…" : "create proposal branch →"}</button>
+                    {coreProposalResult && <a href={coreProposalResult.commitUrl} target="_blank" rel="noreferrer">{coreProposalResult.branch} · checks {coreProposalResult.validation} ↗</a>}
+                  </form>
+                </div> : <div className="core-repository__empty"><strong>The real repository—not a sandbox copy.</strong><p>Connect once to browse the complete source tree, edit files, and create isolated proposal branches without touching Git.</p></div>}
               </section>
             )}
             {state?.staged && activeTab !== "activity" && activeTab !== "showcase" && (

@@ -1751,6 +1751,31 @@ export async function setContributionStatus(slugValue: string, identity: Identit
   if (!result[0]) throw new RoomError("That shared board item is unavailable.", 404);
 }
 
+export async function getCoreProposalForRelease(slugValue: string, identity: Identity, id: string) {
+  const room = await getRoomForUser(slugValue, identity);
+  if (room.ownerId !== identity.id) throw new RoomError("Only the Core Studio owner can promote a proposal.", 403);
+  const db = getDb();
+  const [proposal] = await db.select({
+    id: contributions.id,
+    providerLabel: contributions.providerLabel,
+    kind: contributions.kind,
+    visibility: contributions.visibility,
+    payloadJson: contributions.payloadJson,
+  }).from(contributions).where(and(eq(contributions.id, id), eq(contributions.roomId, room.id))).limit(1);
+  if (!proposal || proposal.providerLabel !== "Core repository" || proposal.kind !== "patch" || proposal.visibility === "private") throw new RoomError("That Core Studio proposal is unavailable.", 404);
+  let payload: { repository?: string; branch?: string; commitSha?: string } = {};
+  try { payload = JSON.parse(proposal.payloadJson); } catch { /* invalid proposal metadata is rejected below */ }
+  if (!payload.branch || !payload.commitSha || !payload.repository) throw new RoomError("That proposal is missing its protected repository metadata.", 409);
+  const [memberCount, voteCount] = await Promise.all([
+    db.select({ count: sql<number>`count(*)` }).from(roomMembers).where(eq(roomMembers.roomId, room.id)),
+    db.select({ count: sql<number>`count(*)` }).from(contributionReactions).where(and(eq(contributionReactions.contributionId, proposal.id), eq(contributionReactions.reaction, "useful"))),
+  ]);
+  const threshold = Math.max(1, Math.floor(Number(memberCount[0]?.count ?? 0) / 2) + 1);
+  const backing = Number(voteCount[0]?.count ?? 0);
+  if (backing < threshold) throw new RoomError(`This Core proposal needs ${threshold} useful vote${threshold === 1 ? "" : "s"} before release.`, 409);
+  return { ...payload, backing, threshold } as { repository: string; branch: string; commitSha: string; backing: number; threshold: number };
+}
+
 export async function toggleContributionReaction(slugValue: string, identity: Identity, id: string, reaction: string) {
   const room = await getRoomForUser(slugValue, identity);
   if (!contributionReactionsAllowed.has(reaction)) throw new RoomError("That reaction is not supported.");

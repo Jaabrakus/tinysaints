@@ -46,9 +46,9 @@ Never place the key in browser code or a `NEXT_PUBLIC_*` variable. For the hoste
 
 ## Protected Core Studio
 
-An existing room becomes the self-hosting Make/Room Core Studio when its slug matches the server-only `CORE_ROOM_SLUG`. Configure `GITHUB_RELEASE_REPOSITORY`, `GITHUB_RELEASE_BRANCH`, and a narrowly scoped `GITHUB_RELEASE_TOKEN` with repository Contents read/write permission. The release control appears only in that room. It accepts only the latest published snapshot, rejects staged work, requires the room owner, creates an ordinary non-force Git commit, and advances the configured branch. A Vercel, Cloudflare, or other Git-connected host can deploy that commit automatically.
+An existing room becomes the self-hosting Make/Room Core Studio when its slug matches the server-only `CORE_ROOM_SLUG`. Configure `GITHUB_RELEASE_REPOSITORY`, `GITHUB_RELEASE_BRANCH`, and a narrowly scoped `GITHUB_RELEASE_TOKEN` with repository Contents read/write permission. Set `CORE_VALIDATION_WORKFLOW=core-validation.yml` and grant Actions write permission to dispatch isolated checks for every proposal branch. The Core repository workspace reads the real source tree, edits files in Monaco, creates a unique `make-room/proposal-*` branch without a local Git client, and records the branch as a shared room contribution. Promotion requires “useful” backing from a majority of room members, re-checks that the reviewed branch still points to the exact recorded commit, requires the room owner, and advances the protected branch only through a non-force fast-forward. A Vercel, Cloudflare, or other Git-connected host can deploy that commit automatically.
 
-The bridge deliberately does not bypass review: collaborators still fork, present, converge, inspect, back, and ship inside the room first. Git remains the audit and rollback layer even though contributors do not operate Git themselves.
+The bridge deliberately does not bypass review: collaborators create parallel repository proposals, run checks, inspect them, and back the version they want before promotion. Git remains the audit and rollback layer even though contributors do not operate Git themselves.
 
 Local requests need the ChatGPT identity header supplied by the hosting environment. The automated tests exercise both authenticated and unauthenticated paths.
 
