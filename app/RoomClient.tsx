@@ -155,6 +155,7 @@ type Contribution = {
   recommendation: string;
   files: string[];
   lineRefs: Array<{ path: string; start: number; end: number }>;
+  payload: { boardLane?: string };
   mine: boolean;
   reactions: Array<{ userId: string; reaction: "useful" | "test" | "implement" | "clarify" }>;
   links: Array<{ sourceId: string; targetId: string; relation: string }>;
@@ -1356,7 +1357,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     ? ["board", "preview", "code", "assets", "forks", "diff", "showcase", "activity"]
     : ["board", "preview", "code", "forks", "diff", "showcase", "activity"];
   const boardItems = contributions.filter((item) => item.providerLabel === "Team board" && item.visibility !== "private");
-  const boardLane = (item: Contribution) => ["backlog", "active", "review", "blocked"].includes(item.status) ? item.status : "backlog";
+  const boardLane = (item: Contribution) => ["backlog", "active", "review", "blocked"].includes(item.payload?.boardLane ?? "") ? item.payload.boardLane! : "backlog";
   const sourcePaths = Array.from(
     new Set([
       ...(visibleBuild?.files.map((file) => file.path) ?? []),

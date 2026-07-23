@@ -1709,6 +1709,7 @@ export async function listContributions(slugValue: string, identity: Identity, q
       recommendation: contributions.recommendation,
       filesJson: contributions.filesJson,
       lineRefsJson: contributions.lineRefsJson,
+      payloadJson: contributions.payloadJson,
       baseBuildId: contributions.baseBuildId,
       parentContributionId: contributions.parentContributionId,
       createdAt: contributions.createdAt,
@@ -1725,6 +1726,7 @@ export async function listContributions(slugValue: string, identity: Identity, q
       ...row,
       files: parseStringArray(row.filesJson),
       lineRefs: (() => { try { return JSON.parse(row.lineRefsJson); } catch { return []; } })(),
+      payload: (() => { try { return JSON.parse(row.payloadJson); } catch { return {}; } })(),
       mine: row.ownerId === identity.id,
       reactions: reactionRows.filter((reaction) => reaction.contributionId === row.id),
       links: linkRows.filter((link) => link.sourceId === row.id || link.targetId === row.id),
@@ -1742,7 +1744,7 @@ export async function setContributionStatus(slugValue: string, identity: Identit
   const room = await getRoomForUser(slugValue, identity);
   const allowed = new Set(["backlog", "active", "review", "blocked"]);
   if (!allowed.has(status)) throw new RoomError("Choose a valid board lane.");
-  const result = await getDb().update(contributions).set({ status, updatedAt: nowSql() })
+  const result = await getDb().update(contributions).set({ payloadJson: JSON.stringify({ boardLane: status }), updatedAt: nowSql() })
     .where(and(eq(contributions.id, id), eq(contributions.roomId, room.id), ne(contributions.visibility, "private")))
     .returning({ id: contributions.id });
   if (!result[0]) throw new RoomError("That shared board item is unavailable.", 404);
