@@ -4,6 +4,7 @@ import {
   linkContributions,
   listContributions,
   RoomError,
+  setContributionStatus,
   shareContribution,
   toggleContributionReaction,
 } from "../../../lib/room-service";
@@ -58,6 +59,7 @@ export async function POST(request: Request) {
     }
     if (action === "share") await shareContribution(room, user, String(body.id ?? ""));
     else if (action === "react") await toggleContributionReaction(room, user, String(body.id ?? ""), String(body.reaction ?? ""));
+    else if (action === "status") await setContributionStatus(room, user, String(body.id ?? ""), String(body.status ?? ""));
     else if (action === "link") await linkContributions(room, user, String(body.sourceId ?? ""), String(body.targetId ?? ""), String(body.relation ?? ""));
     else throw new RoomError("That contribution action is unsupported.");
     return Response.json(await listContributions(room, user));

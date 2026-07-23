@@ -9,7 +9,7 @@ type Color = "lime" | "violet" | "coral" | "sky" | "cream";
 type SourcePath = string;
 type RoomActionValue = string | number | boolean | null;
 type ProjectKind = "game" | "app";
-type WorkspaceTab = "preview" | "code" | "assets" | "forks" | "diff" | "showcase" | "activity";
+type WorkspaceTab = "board" | "preview" | "code" | "assets" | "forks" | "diff" | "showcase" | "activity";
 type MobileView = "rooms" | "chat" | "build" | "ai";
 
 type SourceFile = {
@@ -140,6 +140,7 @@ type EditorStatus = {
 } | null;
 
 type RuntimeMessage = { level: "ready" | "log" | "warn" | "error"; text: string };
+type InspectedElement = { tag: string; id: string; className: string; text: string };
 
 type Contribution = {
   id: string;
@@ -374,12 +375,17 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [runtimeDraftHtml, setRuntimeDraftHtml] = useState<string | null>(null);
   const [runtimeMessages, setRuntimeMessages] = useState<RuntimeMessage[]>([]);
   const [runtimeRun, setRuntimeRun] = useState(0);
+  const [inspectMode, setInspectMode] = useState(false);
+  const [inspectedElement, setInspectedElement] = useState<InspectedElement | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState("Room history is saved automatically");
   const [newRoomOpen, setNewRoomOpen] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
   const [newRoomTemplate, setNewRoomTemplate] = useState<ProjectKind>("game");
+  const [newRoomError, setNewRoomError] = useState<string | null>(null);
+  const [boardTitle, setBoardTitle] = useState("");
+  const [boardDetails, setBoardDetails] = useState("");
   const [newFileOpen, setNewFileOpen] = useState(false);
   const [newFilePath, setNewFilePath] = useState("");
   const [assetKindFilter, setAssetKindFilter] = useState<"all" | "image" | "audio">("all");
@@ -412,6 +418,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const saveSourceProposalRef = useRef<() => void>(() => undefined);
   const conversationPane = useRef<HTMLElement>(null);
   const buildPane = useRef<HTMLElement>(null);
+  const previewFrame = useRef<HTMLIFrameElement>(null);
   const assetFileInput = useRef<HTMLInputElement>(null);
   const codeEditor = useRef<Parameters<OnMount>[0] | null>(null);
   const monacoApi = useRef<Parameters<OnMount>[1] | null>(null);
@@ -421,7 +428,18 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
 
   useEffect(() => {
     function receiveRuntimeMessage(event: MessageEvent) {
-      const payload = event.data as { type?: unknown; level?: unknown; args?: unknown };
+      const payload = event.data as { type?: unknown; level?: unknown; args?: unknown; element?: unknown };
+      if (payload?.type === "make-room-element-selected" && payload.element && typeof payload.element === "object") {
+        const element = payload.element as Partial<InspectedElement>;
+        setInspectedElement({
+          tag: String(element.tag ?? "element"),
+          id: String(element.id ?? ""),
+          className: String(element.className ?? ""),
+          text: String(element.text ?? "").slice(0, 120),
+        });
+        setNotice("Preview element selected · open it in code or give it to your AI");
+        return;
+      }
       if (payload?.type !== "make-room-runtime" || !["ready", "log", "warn", "error"].includes(String(payload.level))) return;
       const args = Array.isArray(payload.args) ? payload.args.map(String) : [];
       setRuntimeMessages((current) => [
@@ -432,6 +450,10 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     window.addEventListener("message", receiveRuntimeMessage);
     return () => window.removeEventListener("message", receiveRuntimeMessage);
   }, []);
+
+  useEffect(() => {
+    previewFrame.current?.contentWindow?.postMessage({ type: "make-room-inspect-toggle", enabled: inspectMode }, "*");
+  }, [inspectMode, runtimeRun, activeTab]);
 
   const loadRoom = useCallback(
     async (inviteToken?: string | null) => {
@@ -553,7 +575,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     setContributions(await readResponse<Contribution[]>(response));
   }
 
-  async function contributionAction(action: "share" | "react", id: string, reaction?: string) {
+  async function contributionAction(action: "share" | "react" | "status", id: string, reaction?: string) {
     if (busy) return;
     setBusy(`contribution-${action}`);
     setError(null);
@@ -561,10 +583,10 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       const response = await fetch("/api/contributions", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action, room: slug, id, reaction }),
+        body: JSON.stringify({ action, room: slug, id, reaction, status: reaction }),
       });
       setContributions(await readResponse<Contribution[]>(response));
-      setNotice(action === "share" ? "Contribution shared with the room" : "Reaction updated");
+      setNotice(action === "share" ? "Contribution shared with the room" : action === "status" ? "Board updated for the whole team" : "Reaction updated");
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "The contribution could not update.");
     } finally {
@@ -573,8 +595,40 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   }
 
   useEffect(() => {
-    if (contextOpen && slug) void loadContributions("");
-  }, [contextOpen, slug]);
+    if ((contextOpen || activeTab === "board") && slug) void loadContributions("");
+  }, [contextOpen, activeTab, slug]);
+
+  async function addBoardItem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!boardTitle.trim() || busy) return;
+    setBusy("board-item");
+    setError(null);
+    try {
+      const response = await fetch("/api/contributions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "create",
+          room: slug,
+          kind: "context",
+          providerLabel: "Team board",
+          title: boardTitle.trim(),
+          summary: boardDetails.trim() || "Ready for someone on the team to pick up.",
+          baseBuildId: visibleBuild?.id,
+          share: true,
+        }),
+      });
+      const result = await readResponse<{ contributions: Contribution[] }>(response);
+      setContributions(result.contributions);
+      setBoardTitle("");
+      setBoardDetails("");
+      setNotice("Work added to the studio board");
+    } catch (boardError) {
+      setError(boardError instanceof Error ? boardError.message : "The work item could not be added.");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function synthesizeThread() {
     if (!state?.model.configured || busy) return;
@@ -744,6 +798,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     if (!newRoomName.trim() || busy) return;
     setBusy("create");
     setError(null);
+    setNewRoomError(null);
     try {
       const result = await mutateRoom<{ slug: string }>("create", {
         name: newRoomName,
@@ -751,7 +806,9 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       });
       window.location.assign(`/?room=${encodeURIComponent(result.slug)}`);
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "The room could not be created.");
+      const message = createError instanceof Error ? createError.message : "The studio could not be created.";
+      setError(message);
+      setNewRoomError(message);
       setBusy(null);
     }
   }
@@ -1172,6 +1229,25 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     }
   }
 
+  function openInspectedElement() {
+    if (!inspectedElement || !visibleBuild) return;
+    const source = sourceDrafts["index.html"]?.content ?? getSourceFile(visibleBuild, "index.html")?.content ?? "";
+    const needles = [
+      inspectedElement.id ? `id="${inspectedElement.id}"` : "",
+      inspectedElement.className ? `class="${inspectedElement.className}"` : "",
+      `<${inspectedElement.tag}`,
+    ].filter(Boolean);
+    const index = needles.map((needle) => source.indexOf(needle)).find((position) => position >= 0) ?? 0;
+    const line = source.slice(0, index).split("\n").length;
+    setActiveSourcePath("index.html");
+    setActiveTab("code");
+    setTimeout(() => {
+      codeEditor.current?.revealLineInCenter(line);
+      codeEditor.current?.setPosition({ lineNumber: line, column: 1 });
+      codeEditor.current?.focus();
+    }, 80);
+  }
+
   saveSourceProposalRef.current = () => void saveSourceProposal();
 
   const mountCodeEditor: OnMount = (editor, monaco) => {
@@ -1277,8 +1353,10 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const isGameProject = projectKind === "game";
   const runtimeEntry = runtimeEntryFor(visibleBuild);
   const workspaceTabs: WorkspaceTab[] = isGameProject
-    ? ["preview", "code", "assets", "forks", "diff", "showcase", "activity"]
-    : ["preview", "code", "forks", "diff", "showcase", "activity"];
+    ? ["board", "preview", "code", "assets", "forks", "diff", "showcase", "activity"]
+    : ["board", "preview", "code", "forks", "diff", "showcase", "activity"];
+  const boardItems = contributions.filter((item) => item.providerLabel === "Team board" && item.visibility !== "private");
+  const boardLane = (item: Contribution) => ["backlog", "active", "review", "blocked"].includes(item.status) ? item.status : "backlog";
   const sourcePaths = Array.from(
     new Set([
       ...(visibleBuild?.files.map((file) => file.path) ?? []),
@@ -1464,10 +1542,10 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
           </div>
 
           <div className="rail-section-label">
-            <span>your rooms</span>
+            <span>your studios</span>
             <button
               type="button"
-              aria-label="Create a room"
+              aria-label="Create a studio"
               aria-expanded={newRoomOpen}
               onClick={() => setNewRoomOpen((current) => !current)}
             >
@@ -1477,12 +1555,13 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
 
           {newRoomOpen && (
             <form className="new-room-form" onSubmit={makeRoom}>
-              <label htmlFor="new-room-name">Room name</label>
+              <header><strong>START A STUDIO</strong><small>Your team gets chat, code, builds, forks, and a shared board.</small></header>
+              <label htmlFor="new-room-name">Studio name</label>
               <input
                 id="new-room-name"
                 value={newRoomName}
                 onChange={(event) => setNewRoomName(event.target.value)}
-                placeholder="new room"
+                placeholder="Moonshot Games"
                 maxLength={50}
                 autoFocus
               />
@@ -1493,8 +1572,8 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                   aria-pressed={newRoomTemplate === "game"}
                   onClick={() => setNewRoomTemplate("game")}
                 >
-                  <span>GAME</span>
-                  <small>playable 2D starter</small>
+                  <span>GAME STUDIO</span>
+                  <small>playable world + asset lanes</small>
                 </button>
                 <button
                   type="button"
@@ -1502,12 +1581,13 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                   aria-pressed={newRoomTemplate === "app"}
                   onClick={() => setNewRoomTemplate("app")}
                 >
-                  <span>APP</span>
-                  <small>open web workspace</small>
+                  <span>STARTUP</span>
+                  <small>product + full web workspace</small>
                 </button>
               </div>
+              {newRoomError && <p role="alert">{newRoomError}</p>}
               <button type="submit" disabled={!newRoomName.trim() || Boolean(busy)}>
-                create {newRoomTemplate} →
+                {busy === "create" ? "creating studio…" : "create studio →"}
               </button>
             </form>
           )}
@@ -2177,6 +2257,49 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
           <div
             className={`build-stage ${activeTab === "code" || activeTab === "diff" ? "build-stage--ide" : ""}`}
           >
+            {activeTab === "board" && state && (
+              <section className="studio-board" aria-label="Studio work board">
+                <header className="studio-board__header">
+                  <div><span>TEAM BULLETIN</span><h3>What we’re making next</h3></div>
+                  <p>Claim work with <b>doing</b>, send it to <b>review</b>, or flag a <b>blocker</b>. Every card belongs to the room memory.</p>
+                </header>
+                <form className="studio-board__composer" onSubmit={addBoardItem}>
+                  <input value={boardTitle} onChange={(event) => setBoardTitle(event.target.value)} maxLength={100} placeholder="Add a feature, asset, bug, or decision…" aria-label="Work item title" />
+                  <input value={boardDetails} onChange={(event) => setBoardDetails(event.target.value)} maxLength={600} placeholder="A little context for the team (optional)" aria-label="Work item details" />
+                  <button type="submit" disabled={!boardTitle.trim() || Boolean(busy)}>{busy === "board-item" ? "adding…" : "add to board +"}</button>
+                </form>
+                <div className="studio-board__lanes">
+                  {([
+                    ["backlog", "UP NEXT"],
+                    ["active", "IN MOTION"],
+                    ["review", "NEEDS REVIEW"],
+                    ["blocked", "BLOCKED"],
+                  ] as const).map(([lane, label]) => {
+                    const cards = boardItems.filter((item) => boardLane(item) === lane);
+                    return <section className={`board-lane board-lane--${lane}`} key={lane}>
+                      <header><span>{label}</span><b>{cards.length}</b></header>
+                      <div>
+                        {cards.length === 0 && <p className="board-lane__empty">Nothing here yet.</p>}
+                        {cards.map((item) => <article className="board-card" key={item.id}>
+                          <h4>{item.title}</h4><p>{item.summary}</p>
+                          <small>{item.ownerName} · {timeLabel(item.createdAt)}</small>
+                          <footer>
+                            {lane !== "active" && <button type="button" onClick={() => void contributionAction("status", item.id, "active")}>doing</button>}
+                            {lane !== "review" && <button type="button" onClick={() => void contributionAction("status", item.id, "review")}>review</button>}
+                            {lane !== "blocked" && <button type="button" onClick={() => void contributionAction("status", item.id, "blocked")}>blocked</button>}
+                            {lane !== "backlog" && <button type="button" onClick={() => void contributionAction("status", item.id, "backlog")}>up next</button>}
+                          </footer>
+                        </article>)}
+                      </div>
+                    </section>;
+                  })}
+                </div>
+                <footer className="studio-board__converge">
+                  <span>{state.branches.length} forks · {state.showcase.length} presented · {state.staged ? "1 proposal waiting" : "main is in sync"}</span>
+                  <button type="button" onClick={() => setActiveTab("showcase")} disabled={!state.showcase.length}>open convergence →</button>
+                </footer>
+              </section>
+            )}
             {state?.staged && activeTab !== "activity" && activeTab !== "showcase" && (
               <div className="staged-banner">
                 <span>{proposalSourceLabel(state.staged.sourceKind)} · STAGED, NOT PUBLISHED</span>
@@ -2204,8 +2327,12 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                   <button type="button" onClick={() => void runWorkspaceDraft()} disabled={Boolean(busy)}>
                     {busy === "run-draft" ? "compiling…" : "run latest ▶"}
                   </button>
+                  <button className={inspectMode ? "is-active" : ""} type="button" onClick={() => { setInspectMode((current) => !current); setInspectedElement(null); }}>
+                    {inspectMode ? "inspecting ◎" : "inspect UI ◎"}
+                  </button>
                 </div>
                 <iframe
+                  ref={previewFrame}
                   key={runtimeDraftHtml ? `draft-${runtimeRun}` : visibleBuild.id}
                   className="artifact-frame"
                   title={`${visibleBuild.name} interactive preview`}
@@ -2214,6 +2341,13 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                   sandbox="allow-scripts"
                   referrerPolicy="no-referrer"
                 />
+                {inspectedElement && (
+                  <div className="visual-inspector-card">
+                    <div><span>SELECTED IN PREVIEW</span><strong>{inspectedElement.tag}{inspectedElement.id ? `#${inspectedElement.id}` : ""}</strong><small>{inspectedElement.text || inspectedElement.className || "UI element"}</small></div>
+                    <button type="button" onClick={openInspectedElement}>open in index.html →</button>
+                    <button type="button" onClick={() => { setContextOpen(true); setContextFiles("index.html"); setContextSummary(`Change the selected ${inspectedElement.tag} element: ${inspectedElement.text || inspectedElement.className}`); setMobileView("ai"); }}>send to my AI →</button>
+                  </div>
+                )}
                 <section className="runtime-console" aria-label="Runtime console">
                   <header><strong>CONSOLE</strong><button type="button" onClick={() => setRuntimeMessages([])}>clear</button></header>
                   <div>

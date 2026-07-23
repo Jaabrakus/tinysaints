@@ -1738,6 +1738,16 @@ export async function shareContribution(slugValue: string, identity: Identity, i
   if (!result[0]) throw new RoomError("That private contribution is unavailable.", 404);
 }
 
+export async function setContributionStatus(slugValue: string, identity: Identity, id: string, status: string) {
+  const room = await getRoomForUser(slugValue, identity);
+  const allowed = new Set(["backlog", "active", "review", "blocked"]);
+  if (!allowed.has(status)) throw new RoomError("Choose a valid board lane.");
+  const result = await getDb().update(contributions).set({ status, updatedAt: nowSql() })
+    .where(and(eq(contributions.id, id), eq(contributions.roomId, room.id), ne(contributions.visibility, "private")))
+    .returning({ id: contributions.id });
+  if (!result[0]) throw new RoomError("That shared board item is unavailable.", 404);
+}
+
 export async function toggleContributionReaction(slugValue: string, identity: Identity, id: string, reaction: string) {
   const room = await getRoomForUser(slugValue, identity);
   if (!contributionReactionsAllowed.has(reaction)) throw new RoomError("That reaction is not supported.");
