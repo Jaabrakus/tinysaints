@@ -8,6 +8,7 @@ import { buildDiffLines, diffStats } from "../lib/kimi-code-diff";
 type Color = "lime" | "violet" | "coral" | "sky" | "cream";
 type SourcePath = string;
 type RoomActionValue = string | number | boolean | null;
+type ProjectKind = "game" | "app";
 
 type SourceFile = {
   path: SourcePath;
@@ -160,6 +161,34 @@ function fileGlyph(language: SourceFile["language"]) {
   return "–";
 }
 
+function projectKindFor(build: Build | null | undefined): ProjectKind {
+  const manifest = getSourceFile(build, "project.make.json");
+  if (!manifest) return "app";
+  try {
+    const parsed = JSON.parse(manifest.content) as { kind?: unknown };
+    return parsed.kind === "game" ? "game" : "app";
+  } catch {
+    return "app";
+  }
+}
+
+function laneForPath(path: string, kind: ProjectKind) {
+  if (kind === "game") {
+    if (path.startsWith("assets/")) return "art";
+    if (path.startsWith("audio/")) return "audio";
+    if (path.startsWith("world/")) return "world";
+    if (path.startsWith("playtests/")) return "playtest";
+    if (path.startsWith("src/")) return "logic";
+    if (path === "index.html" || path === "styles.css") return "stage";
+    return "project";
+  }
+  if (path.startsWith("src/")) return "logic";
+  if (path.startsWith("data/")) return "data";
+  if (path.startsWith("tests/") || path.startsWith("docs/")) return "quality";
+  if (path === "index.html" || path === "styles.css" || path.startsWith("components/")) return "interface";
+  return "project";
+}
+
 function utf8ByteCount(value: string) {
   return new TextEncoder().encode(value).byteLength;
 }
@@ -234,6 +263,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [notice, setNotice] = useState("Room history is saved automatically");
   const [newRoomOpen, setNewRoomOpen] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
+  const [newRoomTemplate, setNewRoomTemplate] = useState<ProjectKind>("game");
   const [newFileOpen, setNewFileOpen] = useState(false);
   const [newFilePath, setNewFilePath] = useState("");
   const [agentOpen, setAgentOpen] = useState(false);
@@ -482,7 +512,10 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     setBusy("create");
     setError(null);
     try {
-      const result = await mutateRoom<{ slug: string }>("create", { name: newRoomName });
+      const result = await mutateRoom<{ slug: string }>("create", {
+        name: newRoomName,
+        template: newRoomTemplate,
+      });
       window.location.assign(`/?room=${encodeURIComponent(result.slug)}`);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "The room could not be created.");
@@ -863,6 +896,8 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   }
 
   const visibleBuild = state?.staged ?? state?.published;
+  const projectKind = projectKindFor(visibleBuild);
+  const isGameProject = projectKind === "game";
   const sourcePaths = Array.from(
     new Set([
       ...(visibleBuild?.files.map((file) => file.path) ?? []),
@@ -916,6 +951,16 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     state?.members.filter((member) => member.online) ?? [];
   const currentUserName = state?.user.displayName ?? initialUser.displayName;
 
+  function openProjectLane(path: string) {
+    if (path === "__play__") {
+      setActiveTab("preview");
+      return;
+    }
+    if (!sourcePaths.includes(path)) return;
+    setActiveSourcePath(path);
+    setActiveTab("code");
+  }
+
   return (
     <main className="product-shell">
       <div className="workspace">
@@ -925,7 +970,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               <span className="wordmark__spark">✳</span>
               <span>make/room</span>
             </Link>
-            <span className="rail-brand__mode">COLLAB IDE</span>
+            <span className="rail-brand__mode">{isGameProject ? "GAME STUDIO" : "OPEN STUDIO"}</span>
           </div>
 
           <div className="rail-section-label">
@@ -951,8 +996,28 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 maxLength={50}
                 autoFocus
               />
+              <div className="project-template-picker" role="group" aria-label="Starting project">
+                <button
+                  type="button"
+                  className={newRoomTemplate === "game" ? "is-active" : ""}
+                  aria-pressed={newRoomTemplate === "game"}
+                  onClick={() => setNewRoomTemplate("game")}
+                >
+                  <span>GAME</span>
+                  <small>playable 2D starter</small>
+                </button>
+                <button
+                  type="button"
+                  className={newRoomTemplate === "app" ? "is-active" : ""}
+                  aria-pressed={newRoomTemplate === "app"}
+                  onClick={() => setNewRoomTemplate("app")}
+                >
+                  <span>APP</span>
+                  <small>open web workspace</small>
+                </button>
+              </div>
               <button type="submit" disabled={!newRoomName.trim() || Boolean(busy)}>
-                make →
+                create {newRoomTemplate} →
               </button>
             </form>
           )}
@@ -1099,8 +1164,12 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
           </div>
 
           <div className="room-note">
-            <span>ROOM RULES</span>
-            <p>Thread → patch → review → majority ship. Published builds never change silently.</p>
+            <span>{isGameProject ? "STUDIO LOOP" : "ROOM RULES"}</span>
+            <p>
+              {isGameProject
+                ? "Play → fork → build by lane → present → converge. Every shipped version stays playable."
+                : "Thread → patch → review → majority ship. Published builds never change silently."}
+            </p>
           </div>
 
           {inviteLink && (
@@ -1258,7 +1327,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
         <aside ref={buildPane} className="build-panel" aria-label="Generated app">
           <div className="build-panel__header">
             <div className="build-panel__title">
-              <p className="section-kicker">WORKSPACE · ARTIFACT</p>
+              <p className="section-kicker">{isGameProject ? "GAME STUDIO · PLAYABLE BUILD" : "OPEN STUDIO · APPLICATION"}</p>
               <h2>{visibleBuild?.name ?? "No build yet"}</h2>
             </div>
             <div className="build-panel__actions">
@@ -1410,6 +1479,36 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
             </section>
           )}
 
+          {isGameProject && visibleBuild && (
+            <nav className="studio-lanes" aria-label="Game production lanes">
+              <span>WORK LANES</span>
+              {[
+                ["play", "__play__", "▶"],
+                ["logic", "src/app.js", "JS"],
+                ["world", "world/level-01.json", "{}"],
+                ["art", "assets/README.md", "▧"],
+                ["audio", "audio/README.md", "♪"],
+                ["test", "playtests/README.md", "✓"],
+              ].map(([label, path, glyph]) => (
+                <button
+                  type="button"
+                  className={
+                    (path === "__play__" && activeTab === "preview") ||
+                    (path !== "__play__" && activeTab === "code" && activeSourcePath === path)
+                      ? "is-active"
+                      : ""
+                  }
+                  onClick={() => openProjectLane(path)}
+                  key={path}
+                >
+                  <i>{glyph}</i>
+                  <span>{label}</span>
+                </button>
+              ))}
+              <small>Each lane can fork, work independently, and return as one playable proposal.</small>
+            </nav>
+          )}
+
           <div className="build-tabs" role="tablist" aria-label="Build views">
             {(["preview", "code", "forks", "diff", "showcase", "activity"] as const).map((tabName) => (
               <button
@@ -1431,7 +1530,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 }
                 key={tabName}
               >
-                {tabName}
+                {isGameProject && tabName === "preview" ? "play" : tabName}
               </button>
             ))}
             <span className="sandbox-label"><i /> isolated JS · no network</span>
@@ -1516,8 +1615,8 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                           <strong>{path}</strong>
                           <small>
                             {file
-                              ? `${file.byteCount.toLocaleString()} bytes`
-                              : `${utf8ByteCount(fileDraft?.content ?? "").toLocaleString()} bytes · new`}
+                              ? `${laneForPath(path, projectKind)} · ${file.byteCount.toLocaleString()} bytes`
+                              : `${laneForPath(path, projectKind)} · ${utf8ByteCount(fileDraft?.content ?? "").toLocaleString()} bytes · new`}
                           </small>
                         </span>
                         {isDirty && <i aria-label="Unsaved local changes" />}

@@ -16,12 +16,36 @@ test("compiles the bounded multi-file starter project", () => {
   assert.deepEqual(reopened, generatedSourceFromFiles(files));
   assert.deepEqual(
     files.map((file) => file.path),
-    ["index.html", "README.md", "src/app.js", "styles.css"],
+    ["index.html", "project.make.json", "README.md", "src/app.js", "styles.css"],
   );
   assert.match(artifact, /default-src 'none'/);
   assert.match(artifact, /script-src 'nonce-make-room-project'/);
   assert.match(artifact, /const status = document\.querySelector/);
   assert.match(artifact, /connect-src 'none'/);
+});
+
+test("creates a playable multi-lane game studio project", () => {
+  const files = makeStarterProject("spark run", "game");
+  const artifact = assembleArtifactFiles(files, "spark run");
+
+  assert.deepEqual(
+    files.map((file) => file.path),
+    [
+      "assets/README.md",
+      "audio/README.md",
+      "index.html",
+      "playtests/README.md",
+      "project.make.json",
+      "README.md",
+      "src/app.js",
+      "styles.css",
+      "world/level-01.json",
+    ],
+  );
+  assert.match(artifact, /<canvas id="game"/);
+  assert.match(artifact, /requestAnimationFrame\(frame\)/);
+  assert.match(artifact, /Collect every spark/);
+  assert.match(files.find((file) => file.path === "project.make.json").content, /browser-canvas-2d/);
 });
 
 test("requires one unique index.html and styles.css snapshot", () => {

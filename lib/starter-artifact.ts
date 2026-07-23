@@ -109,6 +109,8 @@ export type ArtifactSourceFile = {
   language: ArtifactLanguage;
 };
 
+export type ProjectTemplate = "game" | "app";
+
 export const MAX_PROJECT_FILES = 40;
 export const MAX_PROJECT_FILE_BYTES = 65_536;
 export const MAX_PROJECT_BYTES = 524_288;
@@ -207,7 +209,199 @@ export function sourceFilesFromGenerated(
   ];
 }
 
-export function makeStarterProject(roomName: string): ArtifactSourceFile[] {
+function makeGameStarterProject(roomName: string): ArtifactSourceFile[] {
+  return validateArtifactFiles([
+    {
+      path: "index.html",
+      language: "html",
+      content: `<main class="game-shell">
+  <header class="game-header">
+    <div>
+      <span class="eyebrow">PLAYABLE BUILD · CANVAS 2D</span>
+      <h1>${escapeHtml(roomName)}</h1>
+    </div>
+    <div class="scoreboard"><span>SPARKS</span><strong id="score">0 / 7</strong></div>
+  </header>
+  <section class="stage" aria-label="Playable game">
+    <canvas id="game" width="960" height="540" aria-label="Move the lime player and collect seven sparks"></canvas>
+    <div class="game-status" id="game-status">Collect every spark. Use WASD or arrow keys.</div>
+  </section>
+  <footer class="game-controls">
+    <div class="pad" aria-label="Touch controls">
+      <button type="button" data-key="ArrowLeft" aria-label="Move left">←</button>
+      <button type="button" data-key="ArrowUp" aria-label="Move up">↑</button>
+      <button type="button" data-key="ArrowDown" aria-label="Move down">↓</button>
+      <button type="button" data-key="ArrowRight" aria-label="Move right">→</button>
+    </div>
+    <button class="reset" id="reset" type="button">restart run</button>
+  </footer>
+</main>`,
+    },
+    {
+      path: "styles.css",
+      language: "css",
+      content: `:root{color-scheme:dark;--ink:#0d0e0c;--panel:#171915;--line:#34372f;--lime:#caff45;--paper:#f3f4ed;--muted:#8e9287}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 50% 0,#252a20 0,#10110f 46%,#090a08 100%);color:var(--paper);font-family:Arial,sans-serif}
+button{font:inherit}
+.game-shell{width:min(100%,1040px);padding:24px}
+.game-header,.game-controls{display:flex;align-items:center;justify-content:space-between;gap:18px}
+.eyebrow{color:var(--lime);font:700 10px monospace;letter-spacing:.13em}
+h1{margin:6px 0 16px;font-size:clamp(28px,5vw,58px);line-height:.9;letter-spacing:-.06em}
+.scoreboard{display:grid;min-width:112px;gap:3px;padding:11px 14px;border:1px solid var(--line);border-radius:10px;background:#11130f;text-align:right}
+.scoreboard span{color:var(--muted);font:700 9px monospace;letter-spacing:.1em}.scoreboard strong{font:700 18px monospace}
+.stage{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:14px;background:#11130f;box-shadow:0 24px 80px #0008}
+canvas{display:block;width:100%;height:auto;aspect-ratio:16/9}
+.game-status{position:absolute;right:12px;bottom:12px;left:12px;padding:9px 11px;border:1px solid #ffffff17;border-radius:7px;background:#090a08c9;color:#bdc0b7;font:11px/1.4 monospace;backdrop-filter:blur(8px)}
+.game-controls{margin-top:12px}.pad{display:flex;gap:7px}.pad button,.reset{min-width:40px;height:38px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--paper);cursor:pointer}
+.pad button:active{border-color:var(--lime);background:var(--lime);color:var(--ink)}.reset{width:auto;padding:0 16px;color:var(--lime);font:700 10px monospace}
+@media(max-width:600px){.game-shell{padding:12px}.game-header{align-items:end}.scoreboard{min-width:92px}.game-status{font-size:9px}.game-controls{align-items:stretch}.pad{flex:1}.pad button{flex:1}.reset{padding:0 10px}}`,
+    },
+    {
+      path: "src/app.js",
+      language: "javascript",
+      content: `const canvas = document.querySelector("#game");
+const context = canvas.getContext("2d");
+const score = document.querySelector("#score");
+const status = document.querySelector("#game-status");
+const pressed = new Set();
+const player = { x: 120, y: 270, radius: 15, speed: 260 };
+const sparkSeeds = [[240,110],[420,190],[610,105],[790,220],[300,410],[555,385],[830,430]];
+let sparks = [];
+let previousTime = 0;
+
+const resetGame = () => {
+  player.x = 120;
+  player.y = 270;
+  sparks = sparkSeeds.map(([x,y], index) => ({ x, y, radius: 10, phase: index * 0.8, found: false }));
+  score.textContent = "0 / " + sparks.length;
+  status.textContent = "Collect every spark. Use WASD or arrow keys.";
+};
+
+const setKey = (key, active) => {
+  const normalized = key.length === 1 ? key.toLowerCase() : key;
+  if (active) pressed.add(normalized); else pressed.delete(normalized);
+};
+
+document.addEventListener("keydown", (event) => {
+  if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","w","a","s","d"].includes(event.key)) event.preventDefault();
+  setKey(event.key, true);
+});
+document.addEventListener("keyup", (event) => setKey(event.key, false));
+document.querySelectorAll("[data-key]").forEach((button) => {
+  const key = button.getAttribute("data-key");
+  button.addEventListener("pointerdown", () => setKey(key, true));
+  button.addEventListener("pointerup", () => setKey(key, false));
+  button.addEventListener("pointercancel", () => setKey(key, false));
+  button.addEventListener("pointerleave", () => setKey(key, false));
+});
+document.querySelector("#reset").addEventListener("click", resetGame);
+
+const update = (delta) => {
+  const horizontal = Number(pressed.has("ArrowRight") || pressed.has("d")) - Number(pressed.has("ArrowLeft") || pressed.has("a"));
+  const vertical = Number(pressed.has("ArrowDown") || pressed.has("s")) - Number(pressed.has("ArrowUp") || pressed.has("w"));
+  const length = Math.hypot(horizontal, vertical) || 1;
+  player.x += horizontal / length * player.speed * delta;
+  player.y += vertical / length * player.speed * delta;
+  player.x = Math.max(player.radius, Math.min(canvas.width - player.radius, player.x));
+  player.y = Math.max(player.radius, Math.min(canvas.height - player.radius, player.y));
+
+  for (const spark of sparks) {
+    if (!spark.found && Math.hypot(player.x - spark.x, player.y - spark.y) < player.radius + spark.radius + 4) spark.found = true;
+  }
+  const collected = sparks.filter((spark) => spark.found).length;
+  score.textContent = collected + " / " + sparks.length;
+  if (collected === sparks.length) status.textContent = "Run complete. Fork this build and invent the next mechanic.";
+};
+
+const draw = (time) => {
+  context.fillStyle = "#10120e";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.strokeStyle = "#20241c";
+  context.lineWidth = 1;
+  for (let x = 0; x <= canvas.width; x += 48) { context.beginPath(); context.moveTo(x,0); context.lineTo(x,canvas.height); context.stroke(); }
+  for (let y = 0; y <= canvas.height; y += 48) { context.beginPath(); context.moveTo(0,y); context.lineTo(canvas.width,y); context.stroke(); }
+
+  for (const spark of sparks) {
+    if (spark.found) continue;
+    const pulse = 1 + Math.sin(time / 230 + spark.phase) * 0.18;
+    context.beginPath();
+    context.arc(spark.x, spark.y, spark.radius * pulse, 0, Math.PI * 2);
+    context.fillStyle = "#9d8cff";
+    context.shadowColor = "#9d8cff";
+    context.shadowBlur = 18;
+    context.fill();
+  }
+  context.shadowBlur = 24;
+  context.shadowColor = "#caff45";
+  context.fillStyle = "#caff45";
+  context.beginPath();
+  context.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+  context.fill();
+  context.shadowBlur = 0;
+};
+
+const frame = (time) => {
+  const delta = Math.min((time - previousTime) / 1000, 0.05);
+  previousTime = time;
+  update(delta);
+  draw(time);
+  requestAnimationFrame(frame);
+};
+
+resetGame();
+requestAnimationFrame(frame);`,
+    },
+    {
+      path: "project.make.json",
+      language: "json",
+      content: JSON.stringify({
+        schema: 1,
+        kind: "game",
+        runtime: "browser-canvas-2d",
+        entry: "src/app.js",
+        lanes: {
+          logic: ["src/**"],
+          world: ["world/**"],
+          art: ["assets/**"],
+          audio: ["audio/**"],
+          playtest: ["playtests/**"],
+        },
+      }, null, 2),
+    },
+    {
+      path: "world/level-01.json",
+      language: "json",
+      content: JSON.stringify({ name: "Spark field", width: 960, height: 540, goal: "collect-all-sparks" }, null, 2),
+    },
+    {
+      path: "assets/README.md",
+      language: "markdown",
+      content: "# Art lane\n\nPut sprite concepts, palettes, animation notes, and future uploaded assets here. Asset binaries will be stored separately and referenced by the project manifest.",
+    },
+    {
+      path: "audio/README.md",
+      language: "markdown",
+      content: "# Audio lane\n\nPlan music, ambience, and sound cues here. Future uploaded audio will live in the project asset store and remain fork-aware.",
+    },
+    {
+      path: "playtests/README.md",
+      language: "markdown",
+      content: "# Playtest lane\n\nRecord what happened, what felt good, and the smallest mechanic worth changing in the next fork.",
+    },
+    {
+      path: "README.md",
+      language: "markdown",
+      content: `# ${roomName}\n\nA playable make/room game project. Work in parallel across logic, world, art, audio, and playtest lanes; present the fork; then converge the best build.`,
+    },
+  ]);
+}
+
+export function makeStarterProject(
+  roomName: string,
+  template: ProjectTemplate = "app",
+): ArtifactSourceFile[] {
+  if (template === "game") return makeGameStarterProject(roomName);
   return validateArtifactFiles([
     ...sourceFilesFromGenerated(makeStarterSource(roomName)),
     {
@@ -219,6 +413,22 @@ export function makeStarterProject(roomName: string): ArtifactSourceFile[] {
       path: "README.md",
       language: "markdown",
       content: `# ${roomName}\n\nA shared make/room project. Edit a file, review the staged diff, then ship it together.`,
+    },
+    {
+      path: "project.make.json",
+      language: "json",
+      content: JSON.stringify({
+        schema: 1,
+        kind: "app",
+        runtime: "browser",
+        entry: "src/app.js",
+        lanes: {
+          interface: ["index.html", "styles.css", "components/**"],
+          logic: ["src/**"],
+          data: ["data/**"],
+          quality: ["tests/**", "docs/**"],
+        },
+      }, null, 2),
     },
   ]);
 }

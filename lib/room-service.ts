@@ -20,6 +20,7 @@ import {
   validateArtifactFiles,
   validateArtifactPath,
   type ArtifactSourceFile,
+  type ProjectTemplate,
 } from "./starter-artifact";
 import { mergeForkSourceSnapshots } from "./fork-merge";
 import { projectChangesBetween } from "./convergence";
@@ -967,6 +968,7 @@ export async function addMessage(
 export async function createRoom(
   identity: Identity,
   rawName: string,
+  template: ProjectTemplate = "app",
 ) {
   await ensureDatabase();
   await upsertUser(identity);
@@ -978,14 +980,18 @@ export async function createRoom(
   const slugBase = normalizeSlug(name) || "room";
   const slug = `${slugBase}-${id.slice(0, 6)}`;
   const buildId = crypto.randomUUID();
-  const source = makeStarterProject(name);
+  const projectTemplate: ProjectTemplate = template === "game" ? "game" : "app";
+  const source = makeStarterProject(name, projectTemplate);
   const fileRows = await sourceRows(buildId, source);
   await db.batch([
     db.insert(rooms).values({
       id,
       slug,
       name,
-      note: `Building ${name} together.`,
+      note:
+        projectTemplate === "game"
+          ? `Building and playtesting ${name} together.`
+          : `Building ${name} together.`,
       ownerId: identity.id,
     }),
     db.insert(roomMembers).values({ roomId: id, userId: identity.id, role: "owner" }),
@@ -996,10 +1002,17 @@ export async function createRoom(
       status: "published",
       sourceKind: "starter",
       name,
-      proposalTitle: "Starter artifact",
-      rationale: "A room needs something real to react to before the first synthesis.",
-      summary: "A small interactive starting point.",
-      changesJson: JSON.stringify(["Created the room", "Added a working artifact", "Opened the build history"]),
+      proposalTitle: projectTemplate === "game" ? "Playable game starter" : "Starter application",
+      rationale: "A room needs something real to play with or use before the first proposal.",
+      summary:
+        projectTemplate === "game"
+          ? "A playable Canvas 2D project with team work lanes."
+          : "A small interactive application starting point.",
+      changesJson: JSON.stringify(
+        projectTemplate === "game"
+          ? ["Created a playable game", "Opened logic, world, art, audio, and playtest lanes", "Started the build history"]
+          : ["Created the room", "Added a working application", "Opened the build history"],
+      ),
       sourceMessageIdsJson: "[]",
       html: assembleArtifactFiles(source, name),
       createdBy: identity.id,

@@ -67,6 +67,7 @@ export async function POST(request: Request) {
       slug?: string;
       body?: string;
       name?: string;
+      template?: "game" | "app";
       token?: string;
       path?: string;
       content?: string | null;
@@ -136,7 +137,7 @@ export async function POST(request: Request) {
     }
     if (action === "create") {
       return Response.json(
-        { slug: await createRoom(identity, payload.name ?? "") },
+        { slug: await createRoom(identity, payload.name ?? "", payload.template ?? "app") },
         { status: 201 },
       );
     }
