@@ -43,6 +43,13 @@
       "when": 1784784000000,
       "tag": "0005_live_collaboration",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1784811600000,
+      "tag": "0006_guest_sessions",
+      "breakpoints": true
     }
   ]
 }

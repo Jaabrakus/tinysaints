@@ -6,9 +6,11 @@ async function source(path) {
   return readFile(new URL(path, import.meta.url), "utf8");
 }
 
-test("requires identity and drives the product from persisted room state", async () => {
-  const [page, client, roomRoute, roomService, convergenceRoute, playRoute, presenceRoute, projectAgentRoute, publicPlayRoute] = await Promise.all([
+test("supports guest identity and drives the product from persisted room state", async () => {
+  const [page, guestEntry, guestRoute, client, roomRoute, roomService, convergenceRoute, playRoute, presenceRoute, projectAgentRoute, publicPlayRoute] = await Promise.all([
     source("../app/page.tsx"),
+    source("../app/GuestEntry.tsx"),
+    source("../app/api/guest/route.ts"),
     source("../app/RoomClient.tsx"),
     source("../app/api/room/route.ts"),
     source("../lib/room-service.ts"),
@@ -19,7 +21,13 @@ test("requires identity and drives the product from persisted room state", async
     source("../app/api/public-play/route.ts"),
   ]);
 
-  assert.match(page, /requireChatGPTUser\("\/"\)/);
+  assert.doesNotMatch(page, /requireChatGPTUser/);
+  assert.match(page, /await getIdentity\(\)/);
+  assert.match(page, /<GuestEntry/);
+  assert.match(guestEntry, /\/api\/guest/);
+  assert.match(guestEntry, /continue with ChatGPT/);
+  assert.match(guestRoute, /HttpOnly; SameSite=Lax/);
+  assert.match(guestRoute, /createGuestSession/);
   assert.match(page, /<RoomClient/);
   assert.match(page, /key=\{initialSlug \|\| "home"\}/);
   assert.match(roomRoute, /await authenticatedIdentity\(\)/);
@@ -104,7 +112,7 @@ test("uses canonical server context and fails honestly without Kimi", async () =
 });
 
 test("keeps secrets server-side and generated code inside an opaque sandbox", async () => {
-  const [client, artifact, hosting, migration, sourceMigration, workspaceMigration, agentMigration, assetMigration, collaborationMigration, agentRoute, assetRoute, mcpRoute, notices] = await Promise.all([
+  const [client, artifact, hosting, migration, sourceMigration, workspaceMigration, agentMigration, assetMigration, collaborationMigration, guestMigration, agentRoute, assetRoute, mcpRoute, notices] = await Promise.all([
     source("../app/RoomClient.tsx"),
     source("../lib/starter-artifact.ts"),
     source("../.openai/hosting.json"),
@@ -114,6 +122,7 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
     source("../drizzle/0003_complex_skaar.sql"),
     source("../drizzle/0004_flat_clea.sql"),
     source("../drizzle/0005_live_collaboration.sql"),
+    source("../drizzle/0006_guest_sessions.sql"),
     source("../app/api/agent/route.ts"),
     source("../app/api/assets/route.ts"),
     source("../app/api/mcp/route.ts"),
@@ -145,6 +154,7 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
   assert.match(collaborationMigration, /CREATE TABLE `live_file_drafts`/);
   assert.match(collaborationMigration, /CREATE TABLE `playtest_links`/);
   assert.match(collaborationMigration, /CREATE TABLE `playtest_feedback`/);
+  assert.match(guestMigration, /CREATE TABLE `guest_sessions`/);
   assert.match(assetRoute, /env\.UPLOADS/);
   assert.match(assetRoute, /5 \* 1024 \* 1024/);
   assert.match(assetRoute, /getProjectAssetRecord/);

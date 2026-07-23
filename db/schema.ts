@@ -39,6 +39,18 @@ export const agentTokens = sqliteTable(
   ],
 );
 
+export const guestSessions = sqliteTable(
+  "guest_sessions",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    expiresAt: text("expires_at").notNull(),
+    lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("guest_sessions_user_idx").on(table.userId)],
+);
+
 export const rooms = sqliteTable(
   "rooms",
   {

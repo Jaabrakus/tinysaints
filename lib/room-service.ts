@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { cookies } from "next/headers";
 import { getChatGPTUser } from "../app/chatgpt-auth";
 import { ensureDatabase, getDb } from "../db";
 import {
@@ -7,6 +8,7 @@ import {
   builds,
   editorPresence,
   fileLeases,
+  guestSessions,
   liveFileDrafts,
   messages,
   playtestFeedback,
@@ -44,6 +46,8 @@ export type Identity = {
   id: string;
   displayName: string;
 };
+
+export const GUEST_COOKIE_NAME = "make_room_guest";
 
 export type GeneratedArtifact = {
   name: string;
@@ -221,11 +225,56 @@ function tokenPrefix(token: string) {
 
 export async function getIdentity(): Promise<Identity | null> {
   const user = await getChatGPTUser();
-  if (!user) return null;
-  return {
-    id: await hashIdentity(user.email),
-    displayName: cleanText(user.displayName, 80),
-  };
+  if (user) {
+    return {
+      id: await hashIdentity(user.email),
+      displayName: cleanText(user.displayName, 80),
+    };
+  }
+  const token = (await cookies()).get(GUEST_COOKIE_NAME)?.value ?? "";
+  if (!/^guest_[0-9a-f]{64}$/.test(token)) return null;
+  await ensureDatabase();
+  const db = getDb();
+  const tokenHash = await sha256(token);
+  const [session] = await db
+    .select({ userId: guestSessions.userId, displayName: users.displayName })
+    .from(guestSessions)
+    .innerJoin(users, eq(guestSessions.userId, users.id))
+    .where(and(eq(guestSessions.tokenHash, tokenHash), sql`${guestSessions.expiresAt} > CURRENT_TIMESTAMP`))
+    .limit(1);
+  if (!session) return null;
+  await db
+    .update(guestSessions)
+    .set({ lastSeenAt: nowSql() })
+    .where(and(
+      eq(guestSessions.tokenHash, tokenHash),
+      sql`${guestSessions.lastSeenAt} < datetime('now', '-1 minute')`,
+    ));
+  return { id: session.userId, displayName: session.displayName };
+}
+
+export async function createGuestSession(rawDisplayName: string) {
+  await ensureDatabase();
+  const displayName = cleanText(rawDisplayName, 40);
+  if (displayName.length < 2) throw new RoomError("Choose a name with at least two characters.");
+  const token = `guest_${randomToken()}`;
+  const identity = { id: `gst_${crypto.randomUUID()}`, displayName };
+  const db = getDb();
+  await db.batch([
+    db.insert(users).values({ id: identity.id, displayName }),
+    db.insert(guestSessions).values({
+      tokenHash: await sha256(token),
+      userId: identity.id,
+      expiresAt: sql`datetime('now', '+30 days')`,
+    }),
+  ]);
+  return { token, identity };
+}
+
+export async function revokeGuestSession(rawToken: string) {
+  if (!/^guest_[0-9a-f]{64}$/.test(rawToken)) return;
+  await ensureDatabase();
+  await getDb().delete(guestSessions).where(eq(guestSessions.tokenHash, await sha256(rawToken)));
 }
 
 export async function createAgentToken(identity: Identity, rawName: string) {
@@ -301,7 +350,8 @@ export function isKimiConfigured() {
   return Boolean(
     process.env.MOONSHOT_API_KEY ??
       process.env.KIMI_API_KEY ??
-      process.env.AI_API_KEY,
+      process.env.AI_API_KEY ??
+      (process.env.AI_ALLOW_UNAUTHENTICATED === "true" ? process.env.AI_BASE_URL : undefined),
   );
 }
 
@@ -1216,7 +1266,7 @@ export async function getRoomState(slugValue: string, identity: Identity) {
     })),
     model: {
       configured: isKimiConfigured(),
-      name: process.env.AI_MODEL ?? "kimi-k3",
+      name: process.env.AI_MODEL ?? "kimi-k2.5",
     },
   };
 }
@@ -2823,7 +2873,7 @@ export async function stageGeneratedArtifact(
       version: sql<number>`${nextVersion}`.as("version"),
       status: sql<string>`${"staged"}`.as("status"),
       sourceKind: sql<string>`${"kimi"}`.as("source_kind"),
-      agentLabel: sql<string | null>`${"Kimi K3"}`.as("agent_label"),
+      agentLabel: sql<string | null>`${process.env.AI_MODEL ?? "Kimi K2.5"}`.as("agent_label"),
       name: sql<string>`${name}`.as("name"),
       proposalTitle: sql<string>`${proposalTitle}`.as("proposal_title"),
       rationale: sql<string>`${rationale}`.as("rationale"),

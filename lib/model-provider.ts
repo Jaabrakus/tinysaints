@@ -61,6 +61,29 @@ export class ModelProviderError extends Error {
   }
 }
 
+function providerConfig() {
+  const apiKey = process.env.MOONSHOT_API_KEY ?? process.env.KIMI_API_KEY ?? process.env.AI_API_KEY;
+  const allowUnauthenticated = process.env.AI_ALLOW_UNAUTHENTICATED === "true";
+  if (!apiKey && !allowUnauthenticated) {
+    throw new ModelProviderError(
+      "The shared model is not configured. Add AI_BASE_URL, AI_MODEL, and an API key—or explicitly allow a trusted unauthenticated self-hosted endpoint.",
+      503,
+      "model_not_configured",
+    );
+  }
+  return {
+    apiKey,
+    model: process.env.AI_MODEL ?? "kimi-k2.5",
+    baseUrl: (process.env.AI_BASE_URL ?? "https://api.moonshot.ai/v1").replace(/\/$/, ""),
+  };
+}
+
+function providerHeaders(apiKey: string | undefined) {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  return headers;
+}
+
 const artifactSchema = {
   type: "object",
   additionalProperties: false,
@@ -182,20 +205,7 @@ function validateResult(raw: unknown): Omit<GeneratedArtifact, "html" | "files">
 export async function generateArtifact(
   input: ArtifactGenerationInput,
 ): Promise<GeneratedArtifact> {
-  const apiKey =
-    process.env.MOONSHOT_API_KEY ??
-    process.env.KIMI_API_KEY ??
-    process.env.AI_API_KEY;
-  if (!apiKey) {
-    throw new ModelProviderError(
-      "Kimi K3 is not configured yet. Add the server-side MOONSHOT_API_KEY secret to enable synthesis.",
-      503,
-      "model_not_configured",
-    );
-  }
-
-  const model = process.env.AI_MODEL ?? "kimi-k3";
-  const baseUrl = (process.env.AI_BASE_URL ?? "https://api.moonshot.ai/v1").replace(/\/$/, "");
+  const { apiKey, model, baseUrl } = providerConfig();
   const thread = input.messages
     .slice(-30)
     .map((message) => `${message.author}: ${message.body.slice(0, 1200)}`)
@@ -205,10 +215,7 @@ export async function generateArtifact(
   try {
     response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
-      },
+      headers: providerHeaders(apiKey),
       body: JSON.stringify({
         model,
         reasoning_effort: "low",
@@ -317,19 +324,7 @@ export async function generateArtifact(
 export async function generateConvergencePatch(
   input: ConvergenceGenerationInput,
 ): Promise<ConvergenceProposal> {
-  const apiKey =
-    process.env.MOONSHOT_API_KEY ??
-    process.env.KIMI_API_KEY ??
-    process.env.AI_API_KEY;
-  if (!apiKey) {
-    throw new ModelProviderError(
-      "The convergence agent is not configured yet. Add the server-side MOONSHOT_API_KEY secret first.",
-      503,
-      "model_not_configured",
-    );
-  }
-  const model = process.env.AI_MODEL ?? "kimi-k3";
-  const baseUrl = (process.env.AI_BASE_URL ?? "https://api.moonshot.ai/v1").replace(/\/$/, "");
+  const { apiKey, model, baseUrl } = providerConfig();
   const thread = input.messages
     .slice(-30)
     .map((message) => `${message.author}: ${message.body.slice(0, 1200)}`)
@@ -355,10 +350,7 @@ export async function generateConvergencePatch(
   try {
     response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
-      },
+      headers: providerHeaders(apiKey),
       body: JSON.stringify({
         model,
         reasoning_effort: "low",

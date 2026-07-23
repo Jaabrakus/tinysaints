@@ -167,6 +167,11 @@ test("upgrades the deployed schema with immutable source snapshots", async () =>
     ).run("feedback-bad", "link-1", "Tester", 6, "bad"),
     /CHECK constraint failed/,
   );
+  database.exec(await migration("0006_guest_sessions.sql"));
+  database.prepare(
+    "INSERT INTO guest_sessions (token_hash, user_id, expires_at) VALUES (?, ?, datetime('now', '+30 days'))",
+  ).run("8".repeat(64), "user-1");
+  assert.equal(database.prepare("SELECT count(*) AS count FROM guest_sessions").get().count, 1);
 
   database.prepare("DELETE FROM builds WHERE id = ?").run("build-1");
   assert.equal(

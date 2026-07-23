@@ -456,7 +456,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     if (!state?.model.configured || busy) return;
     setBusy("synthesize");
     setError(null);
-    setNotice("Kimi is reading the canonical room history and synthesizing a patch…");
+    setNotice(`${state.model.name} is reading the canonical room history and synthesizing a patch…`);
     try {
       const response = await fetch("/api/generate", {
         method: "POST",
@@ -465,12 +465,12 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       });
       setState(await readResponse<RoomState>(response));
       setActiveTab("preview");
-      setNotice("A Kimi source patch is staged · review it before backing");
+      setNotice("A shared-model source patch is staged · review it before backing");
     } catch (generationError) {
       setError(
         generationError instanceof Error
           ? generationError.message
-          : "Kimi could not finish the patch.",
+          : "The shared model could not finish the patch.",
       );
       setNotice("Nothing changed · the published build is still safe");
     } finally {
@@ -1617,8 +1617,8 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
           <div className="composer-wrap">
             {!state?.model.configured && (
               <div className="model-blocker">
-                <strong>Live Kimi synthesis is locked.</strong>
-                <span>Add the server-side MOONSHOT_API_KEY secret—there is no demo fallback.</span>
+                <strong>Shared AI synthesis needs a model endpoint.</strong>
+                <span>Connect Kimi or any OpenAI-compatible hosted/self-hosted model. Local Ollama remains available per maker.</span>
               </div>
             )}
             <div className="synthesis-line">
