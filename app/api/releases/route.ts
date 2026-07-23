@@ -3,6 +3,7 @@ import { getCoreProposalForRelease, getIdentity, RoomError } from "../../../lib/
 export const runtime = "edge";
 
 type GithubRef = { object?: { sha?: string }; message?: string };
+type GithubChecks = { check_runs?: Array<{ name?: string; status?: string; conclusion?: string }> };
 
 function failure(error: unknown) {
   if (error instanceof RoomError) return Response.json({ error: error.message }, { status: error.status });
@@ -39,6 +40,10 @@ export async function POST(request: Request) {
 
     const sourceRef = await github<GithubRef>(repository, token, `/git/ref/heads/${proposal.branch.split("/").map(encodeURIComponent).join("/")}`);
     if (sourceRef.object?.sha !== proposal.commitSha) throw new RoomError("The proposal branch changed after the room reviewed it.", 409);
+    const checks = await github<GithubChecks>(repository, token, `/commits/${proposal.commitSha}/check-runs`);
+    const validation = (checks.check_runs ?? []).find((check) => check.name === "build-and-test");
+    if (!validation || validation.status !== "completed") throw new RoomError("The isolated Core build and tests must finish before promotion.", 409);
+    if (validation.conclusion !== "success") throw new RoomError("The isolated Core build or tests failed. Fix the proposal before promotion.", 409);
     await github(repository, token, `/git/refs/heads/${targetBranch.split("/").map(encodeURIComponent).join("/")}`, { method: "PATCH", body: JSON.stringify({ sha: proposal.commitSha, force: false }) });
     return Response.json({ commitSha: proposal.commitSha, commitUrl: `https://github.com/${repository}/commit/${proposal.commitSha}`, backing: proposal.backing, threshold: proposal.threshold }, { status: 201 });
   } catch (error) {
