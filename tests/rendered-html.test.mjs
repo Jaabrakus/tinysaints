@@ -58,7 +58,9 @@ test("supports guest identity and drives the product from persisted room state",
   assert.match(roomService, /mergeForkSourceSnapshots/);
   assert.match(roomService, /sourceKind: sql<string>`\$\{"fork-merge"\}`/);
   assert.match(client, /buildDiffLines/);
-  assert.match(client, /action:\s*"edit-file"/);
+  assert.match(client, /action:\s*"edit-project"/);
+  assert.match(client, /runWorkspaceDraft/);
+  assert.match(client, /checkpoint for team/);
   assert.match(client, /mutateRoom<\{ slug: string \}>\("merge-parent"\)/);
   assert.match(client, /\/api\/chat/);
   assert.match(client, /\/api\/export\?room=/);

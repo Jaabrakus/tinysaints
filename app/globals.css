@@ -1869,6 +1869,89 @@ textarea:focus-visible {
   box-shadow: 0 18px 52px rgb(0 0 0 / 0.32);
 }
 
+.runtime-workbench {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.runtime-toolbar,
+.runtime-console header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  background: #121310;
+}
+
+.runtime-toolbar {
+  min-height: 38px;
+  padding: 0 13px;
+}
+
+.runtime-toolbar > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.runtime-toolbar strong,
+.runtime-toolbar small,
+.runtime-console {
+  font-family: var(--font-code);
+}
+
+.runtime-toolbar strong { color: #c9cbc3; font-size: 8px; }
+.runtime-toolbar small { color: var(--faint); font-size: 7px; }
+.runtime-toolbar button,
+.source-editor__run-actions button {
+  min-height: 28px;
+  padding: 0 11px;
+  border: 1px solid rgb(202 255 69 / 0.42);
+  border-radius: 6px;
+  background: rgb(202 255 69 / 0.09);
+  color: var(--lime);
+  font: 600 8px var(--font-code);
+}
+
+.runtime-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--lime);
+  box-shadow: 0 0 10px rgb(202 255 69 / 0.6);
+}
+
+.runtime-workbench .artifact-frame {
+  min-height: 220px;
+}
+
+.runtime-console {
+  min-height: 100px;
+  max-height: 160px;
+  flex: 0 0 22%;
+  overflow: hidden;
+  border-top: 1px solid var(--line-strong);
+  background: #0c0d0b;
+  color: #a9aca3;
+  font-size: 8px;
+}
+
+.runtime-console header { min-height: 27px; padding: 0 11px; }
+.runtime-console header strong { color: #7f8279; font-size: 7px; letter-spacing: .12em; }
+.runtime-console header button { border: 0; background: transparent; color: var(--faint); font: 7px var(--font-code); }
+.runtime-console > div { height: calc(100% - 27px); overflow: auto; padding: 6px 11px; }
+.runtime-console p { display: flex; gap: 10px; margin: 0 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.runtime-console p span { width: 34px; flex: 0 0 auto; color: #6f726a; text-transform: uppercase; }
+.runtime-console__error { color: #ff9a7e; }
+.runtime-console__warn { color: #f4d879; }
+.runtime-console__ready { color: var(--lime); }
+.runtime-console__empty { color: var(--faint); }
+
 .source-state--live {
   color: var(--lime) !important;
 }
@@ -2522,6 +2605,16 @@ textarea:focus-visible {
   min-width: 0;
   align-items: center;
   gap: 7px;
+}
+
+.source-editor__run-actions {
+  justify-content: flex-end;
+}
+
+.source-editor__run-actions .run-draft-button {
+  border-color: rgb(157 140 255 / 0.5);
+  background: rgb(157 140 255 / 0.1);
+  color: #b8abff;
 }
 
 .editor-dirty-dot,

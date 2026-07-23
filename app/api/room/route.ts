@@ -14,6 +14,7 @@ import {
   revokeAgentToken,
   RoomError,
   shipBuild,
+  stageAgentProjectPatch,
   toggleVote,
 } from "../../../lib/room-service";
 
@@ -76,6 +77,7 @@ export async function POST(request: Request) {
       buildId?: string;
       agentLabel?: string;
       tokenId?: string;
+      changes?: Array<{ path: string; content: string | null }>;
     };
     const action = payload.action ?? "";
     const slug = payload.slug ?? "tiny-plans";
@@ -106,6 +108,16 @@ export async function POST(request: Request) {
         expectedRevision: payload.expectedRevision ?? -1,
         baseBuildId: payload.baseBuildId ?? "",
         agentLabel: action === "agent-file" ? payload.agentLabel ?? "Personal agent" : undefined,
+      });
+      return Response.json(await getRoomState(slug, identity));
+    }
+    if (action === "edit-project") {
+      await stageAgentProjectPatch(slug, identity, {
+        changes: payload.changes ?? [],
+        expectedRevision: payload.expectedRevision ?? -1,
+        baseBuildId: payload.baseBuildId ?? "",
+        title: "Team workspace checkpoint",
+        summary: `${payload.changes?.length ?? 0} draft files checkpointed for group review.`,
       });
       return Response.json(await getRoomState(slug, identity));
     }

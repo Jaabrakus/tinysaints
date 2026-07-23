@@ -61,17 +61,34 @@ function playableError(error: unknown) {
   );
 }
 
-export async function GET(request: Request) {
+type DraftPlayPayload = {
+  room?: string;
+  baseBuildId?: string;
+  changes?: Array<{ path: string; content: string | null }>;
+};
+
+async function renderPlayable(request: Request, draft?: DraftPlayPayload) {
   try {
     const identity = await getIdentity();
-    if (!identity) throw new RoomError("Sign in with ChatGPT to play this build.", 401);
+    if (!identity) throw new RoomError("Choose a guest name to play this build.", 401);
     const url = new URL(request.url);
-    const slug = url.searchParams.get("room")?.trim() ?? "";
-    const buildId = url.searchParams.get("build")?.trim() || undefined;
+    const slug = draft?.room?.trim() || url.searchParams.get("room")?.trim() || "";
+    const buildId = draft?.baseBuildId?.trim() || url.searchParams.get("build")?.trim() || undefined;
     if (!slug) throw new RoomError("Choose a room to play.");
 
     const snapshot = await getPlayableProjectSnapshot(slug, identity, buildId);
-    const files = validateArtifactFiles(snapshot.files);
+    const draftChanges = draft?.changes ?? [];
+    if (draftChanges.length > 40) throw new RoomError("Run at most 40 changed files at once.");
+    const fileMap = new Map<string, { path: string; content: string }>(
+      snapshot.files.map((file) => [file.path, { path: file.path, content: file.content }]),
+    );
+    for (const change of draftChanges) {
+      if (!change || typeof change.path !== "string") throw new RoomError("Every draft needs a file path.");
+      if (change.content === null) fileMap.delete(change.path);
+      else if (typeof change.content === "string") fileMap.set(change.path, { path: change.path, content: change.content });
+      else throw new RoomError(`${change.path} needs plain-text content.`);
+    }
+    const files = validateArtifactFiles(Array.from(fileMap.values()));
     const fileByPath = new Map(files.map((file) => [file.path, file.content]));
     const html = fileByPath.get("index.html") ?? "";
     const css = fileByPath.get("styles.css") ?? "";
@@ -123,7 +140,11 @@ export async function GET(request: Request) {
       /<meta http-equiv="Content-Security-Policy" content="[^"]*"\s*\/>/,
       `<meta http-equiv="Content-Security-Policy" content="${metaPolicy}" />`,
     );
+    const runtimeBridge = draft
+      ? `<script nonce="${SCRIPT_NONCE}">(function(){const send=(level,args)=>parent.postMessage({type:'make-room-runtime',level,args:args.map(value=>{try{return typeof value==='string'?value:JSON.stringify(value)}catch{return String(value)}})},'*');for(const level of ['log','warn','error']){const original=console[level].bind(console);console[level]=(...args)=>{original(...args);send(level,args)}}addEventListener('error',event=>send('error',[event.message+' · '+event.filename+':'+event.lineno]));addEventListener('unhandledrejection',event=>send('error',['Unhandled: '+String(event.reason)]));parent.postMessage({type:'make-room-runtime',level:'ready',args:['Draft runtime ready']},'*')})()</script>`
+      : "";
     const runtimeScripts = [
+      runtimeBridge,
       `<script nonce="${SCRIPT_NONCE}">${manifestScript}</script>`,
       wantsPhaser ? `<script nonce="${SCRIPT_NONCE}" src="${PHASER_URL}"></script>` : "",
       entrySource ? `<script nonce="${SCRIPT_NONCE}" data-make-room-entry>${entrySource}</script>` : "",
@@ -141,6 +162,27 @@ export async function GET(request: Request) {
         "x-make-room-runtime": wantsPhaser ? `phaser-${PHASER_VERSION}` : "isolated-javascript",
       },
     });
+  } catch (error) {
+    return playableError(error);
+  }
+}
+
+export async function GET(request: Request) {
+  return renderPlayable(request);
+}
+
+export async function POST(request: Request) {
+  const site = request.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "same-site" && site !== "none") {
+    return Response.json({ error: "Cross-site draft runs are not allowed." }, { status: 403 });
+  }
+  if (!request.headers.get("content-type")?.includes("application/json")) {
+    return Response.json({ error: "Use a JSON draft request." }, { status: 415 });
+  }
+  const length = Number(request.headers.get("content-length") ?? 0);
+  if (length > 600_000) return Response.json({ error: "That draft is too large to run." }, { status: 413 });
+  try {
+    return renderPlayable(request, await request.json() as DraftPlayPayload);
   } catch (error) {
     return playableError(error);
   }

@@ -138,6 +138,8 @@ type EditorStatus = {
   message: string;
 } | null;
 
+type RuntimeMessage = { level: "ready" | "log" | "warn" | "error"; text: string };
+
 type LiveEditorState = {
   conflict: boolean;
   draft: { content: string; revision: number; baseBuildId: string; updatedBy: string } | null;
@@ -327,6 +329,9 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [activeDiffPath, setActiveDiffPath] = useState<SourcePath>("index.html");
   const [sourceDrafts, setSourceDrafts] = useState<Partial<Record<SourcePath, SourceDraft>>>({});
   const [editorStatus, setEditorStatus] = useState<EditorStatus>(null);
+  const [runtimeDraftHtml, setRuntimeDraftHtml] = useState<string | null>(null);
+  const [runtimeMessages, setRuntimeMessages] = useState<RuntimeMessage[]>([]);
+  const [runtimeRun, setRuntimeRun] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState("Room history is saved automatically");
@@ -371,6 +376,20 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const remoteDecorationIds = useRef<string[]>([]);
   const cursorPosition = useRef({ line: 1, column: 1, endLine: 1, endColumn: 1 });
   const liveDraftRevision = useRef(0);
+
+  useEffect(() => {
+    function receiveRuntimeMessage(event: MessageEvent) {
+      const payload = event.data as { type?: unknown; level?: unknown; args?: unknown };
+      if (payload?.type !== "make-room-runtime" || !["ready", "log", "warn", "error"].includes(String(payload.level))) return;
+      const args = Array.isArray(payload.args) ? payload.args.map(String) : [];
+      setRuntimeMessages((current) => [
+        ...current,
+        { level: String(payload.level) as RuntimeMessage["level"], text: args.join(" ") || String(payload.level) },
+      ].slice(-80));
+    }
+    window.addEventListener("message", receiveRuntimeMessage);
+    return () => window.removeEventListener("message", receiveRuntimeMessage);
+  }, []);
 
   const loadRoom = useCallback(
     async (inviteToken?: string | null) => {
@@ -964,10 +983,16 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   }
 
   async function saveSourceProposal() {
-    const sourceDraft = sourceDrafts[activeSourcePath];
-    if (!state || !sourceDraft || busy) return;
+    const entries = Object.entries(sourceDrafts).filter((entry): entry is [string, SourceDraft] => Boolean(entry[1]));
+    if (!state || entries.length === 0 || busy) return;
+    const baseBuildId = entries[0][1].baseBuildId;
+    const expectedRevision = entries[0][1].expectedRevision;
+    if (entries.some(([, draft]) => draft.baseBuildId !== baseBuildId || draft.expectedRevision !== expectedRevision)) {
+      setError("Some drafts started from different room versions. Run or copy them, then reload the latest workspace.");
+      return;
+    }
 
-    setBusy("edit-file");
+    setBusy("edit-project");
     setError(null);
     setEditorStatus(null);
 
@@ -976,12 +1001,11 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          action: "edit-file",
+          action: "edit-project",
           slug,
-          path: activeSourcePath,
-          content: sourceDraft.content,
-          expectedRevision: sourceDraft.expectedRevision,
-          baseBuildId: sourceDraft.baseBuildId,
+          changes: entries.map(([path, sourceDraft]) => ({ path, content: sourceDraft.content })),
+          expectedRevision,
+          baseBuildId,
         }),
       });
       const payload = (await response.json()) as RoomState & { error?: string };
@@ -1000,19 +1024,44 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       if (!response.ok) throw new Error(payload.error ?? "The source proposal could not be saved.");
 
       setState(payload);
-      setSourceDrafts((current) => {
-        const next = { ...current };
-        delete next[activeSourcePath];
-        return next;
-      });
+      setSourceDrafts({});
+      setRuntimeDraftHtml(null);
       setEditorStatus({
         kind: "saved",
         path: activeSourcePath,
-        message: "Saved as the room’s staged proposal. Active backing was reset.",
+        message: `${entries.length} file${entries.length === 1 ? "" : "s"} checkpointed as the room’s staged proposal.`,
       });
-      setNotice("Source patch staged · review the diff, then gather backing");
+      setNotice("Team checkpoint staged · play it, review the combined diff, then gather backing");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "The source proposal could not save.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runWorkspaceDraft() {
+    if (!visibleBuild || busy) return;
+    const changes = Object.entries(sourceDrafts)
+      .filter((entry): entry is [string, SourceDraft] => Boolean(entry[1]))
+      .map(([path, sourceDraft]) => ({ path, content: sourceDraft.content }));
+    setBusy("run-draft");
+    setError(null);
+    setRuntimeMessages([{ level: "ready", text: "Compiling team draft…" }]);
+    try {
+      const response = await fetch("/api/play", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ room: slug, baseBuildId: visibleBuild.id, changes }),
+      });
+      const html = await response.text();
+      if (!response.ok) throw new Error(html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || "The draft could not run.");
+      setRuntimeDraftHtml(html);
+      setRuntimeRun((value) => value + 1);
+      setActiveTab("preview");
+      setNotice(`Running ${changes.length ? `${changes.length} unsaved draft file${changes.length === 1 ? "" : "s"}` : "the current room build"} · nothing published yet`);
+    } catch (runError) {
+      setRuntimeMessages([{ level: "error", text: runError instanceof Error ? runError.message : "The draft could not run." }]);
+      setError(runError instanceof Error ? runError.message : "The draft could not run.");
     } finally {
       setBusy(null);
     }
@@ -1982,15 +2031,36 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               </div>
             )}
             {activeTab === "preview" && visibleBuild && (
-              <iframe
-                key={visibleBuild.id}
-                className="artifact-frame"
-                title={`${visibleBuild.name} interactive preview`}
-                src={isGameProject ? playableUrl(slug, visibleBuild) : undefined}
-                srcDoc={isGameProject ? undefined : visibleBuild.html}
-                sandbox="allow-scripts"
-                referrerPolicy="no-referrer"
-              />
+              <div className="runtime-workbench">
+                <div className="runtime-toolbar">
+                  <div>
+                    <span className={runtimeDraftHtml ? "runtime-live-dot" : ""} />
+                    <strong>{runtimeDraftHtml ? "DRAFT RUNNING" : state?.staged ? "STAGED BUILD" : "PUBLISHED BUILD"}</strong>
+                    <small>{runtimeDraftHtml ? "Private to this browser until checkpointed" : `v${visibleBuild.version}`}</small>
+                  </div>
+                  <button type="button" onClick={() => void runWorkspaceDraft()} disabled={Boolean(busy)}>
+                    {busy === "run-draft" ? "compiling…" : "run latest ▶"}
+                  </button>
+                </div>
+                <iframe
+                  key={runtimeDraftHtml ? `draft-${runtimeRun}` : visibleBuild.id}
+                  className="artifact-frame"
+                  title={`${visibleBuild.name} interactive preview`}
+                  src={runtimeDraftHtml ? undefined : isGameProject ? playableUrl(slug, visibleBuild) : undefined}
+                  srcDoc={runtimeDraftHtml ?? (isGameProject ? undefined : visibleBuild.html)}
+                  sandbox="allow-scripts"
+                  referrerPolicy="no-referrer"
+                />
+                <section className="runtime-console" aria-label="Runtime console">
+                  <header><strong>CONSOLE</strong><button type="button" onClick={() => setRuntimeMessages([])}>clear</button></header>
+                  <div>
+                    {runtimeMessages.length === 0 && <p className="runtime-console__empty">Run the draft to see logs and errors here.</p>}
+                    {runtimeMessages.map((message, index) => (
+                      <p className={`runtime-console__${message.level}`} key={`${runtimeRun}-${index}`}><span>{message.level}</span>{message.text}</p>
+                    ))}
+                  </div>
+                </section>
+              </div>
             )}
             {activeTab === "assets" && state && (
               <section className="asset-library" aria-label="Shared project assets">
@@ -2288,17 +2358,22 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                     <div>
                       <span className={editorIsDirty ? "editor-dirty-dot" : "editor-saved-dot"} />
                       <p>
-                        <strong>{editorIsDirty ? "Local changes not staged" : "Room source in sync"}</strong>
-                        <span>{utf8ByteCount(editorValue).toLocaleString()} bytes · ⌘/Ctrl+S to stage</span>
+                        <strong>{Object.keys(sourceDrafts).length > 0 ? `${Object.keys(sourceDrafts).length} draft file${Object.keys(sourceDrafts).length === 1 ? "" : "s"}` : "Room source in sync"}</strong>
+                        <span>{utf8ByteCount(editorValue).toLocaleString()} bytes · run freely, checkpoint when ready</span>
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => void saveSourceProposal()}
-                      disabled={!editorIsDirty || !fileLeaseIsMine || Boolean(busy)}
-                    >
-                      {busy === "edit-file" ? "saving…" : "save as proposal →"}
-                    </button>
+                    <div className="source-editor__run-actions">
+                      <button className="run-draft-button" type="button" onClick={() => void runWorkspaceDraft()} disabled={Boolean(busy)}>
+                        {busy === "run-draft" ? "compiling…" : "run ▶"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void saveSourceProposal()}
+                        disabled={Object.keys(sourceDrafts).length === 0 || Boolean(busy)}
+                      >
+                        {busy === "edit-project" ? "checkpointing…" : "checkpoint for team →"}
+                      </button>
+                    </div>
                   </div>
                 </section>
               </div>
