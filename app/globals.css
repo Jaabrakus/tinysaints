@@ -3554,6 +3554,27 @@ a.fork-node:hover {
 .visual-inspector-card button { padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--ink-raised); color: var(--muted); font: 8px var(--font-code); }
 .visual-inspector-card button:hover { color: var(--lime); }
 
+.core-release-gate {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(190px, .7fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 13px;
+  border: 1px solid rgb(157 140 255 / .35);
+  border-radius: 9px;
+  background: linear-gradient(120deg, rgb(157 140 255 / .08), rgb(202 255 69 / .04));
+}
+.core-release-gate > div { display: grid; gap: 3px; }
+.core-release-gate span { color: var(--violet); font: 650 7px var(--font-code); letter-spacing: .1em; }
+.core-release-gate h4 { margin: 0; color: var(--text); font-size: 13px; }
+.core-release-gate p { margin: 0; color: var(--faint); font: 8px/1.45 var(--font-code); }
+.core-release-gate ol { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; color: var(--faint); font: 8px var(--font-code); }
+.core-release-gate li::before { margin-right: 6px; content: "○"; }
+.core-release-gate li.is-ready { color: var(--lime); }
+.core-release-gate li.is-ready::before { content: "●"; }
+.core-release-gate > button { min-height: 34px; padding: 0 11px; border: 1px solid rgb(157 140 255 / .45); border-radius: 6px; background: rgb(157 140 255 / .12); color: #b9adff; font: 650 8px var(--font-code); }
+.core-release-gate > a { grid-column: 3; color: var(--lime); font: 8px var(--font-code); text-align: center; }
+
 .showcase-workspace__header {
   display: flex;
   align-items: end;
@@ -4255,6 +4276,8 @@ a.fork-node:hover {
   .studio-board__lanes { grid-template-columns: minmax(170px, 1fr); }
   .visual-inspector-card { grid-template-columns: 1fr 1fr; }
   .visual-inspector-card > div { grid-column: 1 / -1; }
+  .core-release-gate { grid-template-columns: 1fr; }
+  .core-release-gate > a { grid-column: 1; text-align: left; }
 }
 
 .mobile-app-nav {

@@ -65,6 +65,7 @@ type RoomState = {
     presentedAt: string | null;
     forkCount: number;
     canInvite: boolean;
+    isCore: boolean;
     revision: number;
   };
   user: { id: string; displayName: string };
@@ -387,6 +388,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [newRoomError, setNewRoomError] = useState<string | null>(null);
   const [boardTitle, setBoardTitle] = useState("");
   const [boardDetails, setBoardDetails] = useState("");
+  const [releaseResult, setReleaseResult] = useState<string | null>(null);
   const [newFileOpen, setNewFileOpen] = useState(false);
   const [newFilePath, setNewFilePath] = useState("");
   const [assetKindFilter, setAssetKindFilter] = useState<"all" | "image" | "audio">("all");
@@ -626,6 +628,27 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       setNotice("Work added to the studio board");
     } catch (boardError) {
       setError(boardError instanceof Error ? boardError.message : "The work item could not be added.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function releaseCore() {
+    if (!state?.room.isCore || !state.published || state.staged || busy) return;
+    setBusy("core-release");
+    setError(null);
+    setReleaseResult(null);
+    try {
+      const response = await fetch("/api/releases", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ room: slug, buildId: state.published.id }),
+      });
+      const result = await readResponse<{ commitUrl: string; commitSha: string }>(response);
+      setReleaseResult(result.commitUrl);
+      setNotice(`Core release ${result.commitSha.slice(0, 7)} pushed · hosting can deploy automatically`);
+    } catch (releaseError) {
+      setError(releaseError instanceof Error ? releaseError.message : "The core release could not be promoted.");
     } finally {
       setBusy(null);
     }
@@ -2299,6 +2322,18 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                   <span>{state.branches.length} forks · {state.showcase.length} presented · {state.staged ? "1 proposal waiting" : "main is in sync"}</span>
                   <button type="button" onClick={() => setActiveTab("showcase")} disabled={!state.showcase.length}>open convergence →</button>
                 </footer>
+                {state.room.isCore && (
+                  <section className="core-release-gate">
+                    <div><span>PROTECTED CORE STUDIO</span><h4>Release make/room from make/room</h4><p>Only a shipped, majority-backed build reaches the repository bridge. Git remains the audit trail; nobody has to push it manually.</p></div>
+                    <ol>
+                      <li className={state.showcase.length ? "is-ready" : ""}>competing forks compared</li>
+                      <li className={!state.staged ? "is-ready" : ""}>proposal shipped by the room</li>
+                      <li className={state.published ? "is-ready" : ""}>immutable release snapshot</li>
+                    </ol>
+                    <button type="button" onClick={() => void releaseCore()} disabled={Boolean(busy) || Boolean(state.staged) || !state.published}>{busy === "core-release" ? "promoting…" : "release make/room ↑"}</button>
+                    {releaseResult && <a href={releaseResult} target="_blank" rel="noreferrer">open release commit ↗</a>}
+                  </section>
+                )}
               </section>
             )}
             {state?.staged && activeTab !== "activity" && activeTab !== "showcase" && (

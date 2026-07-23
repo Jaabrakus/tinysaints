@@ -1239,6 +1239,7 @@ export async function getRoomState(slugValue: string, identity: Identity) {
       presentedAt: room.presentedAt,
       forkCount: Number(forkCountRows[0]?.count ?? 0),
       canInvite: room.ownerId === identity.id,
+      isCore: Boolean(process.env.CORE_ROOM_SLUG && room.slug === process.env.CORE_ROOM_SLUG),
     },
     user: identity,
     rooms: roomRows,

@@ -19,6 +19,7 @@ make/room is a working founder MVP for collective software creation. Signed-in p
 - a device-local Ollama adapter that proposes the active file under the signed-in maker's identity and never sends the local endpoint to the room
 - one in-flight synthesis per room plus per-user cooldown and daily founder limits
 - honest failure states when Kimi is unavailable or not configured—there is no demo fallback
+- an optional protected Core Studio release bridge that turns a majority-backed published room snapshot into a GitHub commit, letting the connected host deploy without a manual Git push
 
 The generated-app boundary is intentionally narrow. Kimi still generates validated HTML and CSS. Makers and their personal local agents may also edit a bounded `src/app.js` entry file and add supporting text files in folders. JavaScript runs in an opaque iframe with no same-origin access, storage, workers, forms, navigation, or network APIs. Package installation, imported dependencies, and server-backed generated apps still require a separate isolated runner with enforced resource and egress limits.
 
@@ -42,6 +43,12 @@ AI_MODEL=kimi-k3
 ```
 
 Never place the key in browser code or a `NEXT_PUBLIC_*` variable. For the hosted site, add `MOONSHOT_API_KEY` through the site's secret/environment settings rather than committing it or pasting it into chat. Without the key, collaboration still works and synthesis is visibly locked.
+
+## Protected Core Studio
+
+An existing room becomes the self-hosting Make/Room Core Studio when its slug matches the server-only `CORE_ROOM_SLUG`. Configure `GITHUB_RELEASE_REPOSITORY`, `GITHUB_RELEASE_BRANCH`, and a narrowly scoped `GITHUB_RELEASE_TOKEN` with repository Contents read/write permission. The release control appears only in that room. It accepts only the latest published snapshot, rejects staged work, requires the room owner, creates an ordinary non-force Git commit, and advances the configured branch. A Vercel, Cloudflare, or other Git-connected host can deploy that commit automatically.
+
+The bridge deliberately does not bypass review: collaborators still fork, present, converge, inspect, back, and ship inside the room first. Git remains the audit and rollback layer even though contributors do not operate Git themselves.
 
 Local requests need the ChatGPT identity header supplied by the hosting environment. The automated tests exercise both authenticated and unauthenticated paths.
 
