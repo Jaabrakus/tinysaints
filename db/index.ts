@@ -114,6 +114,61 @@ const schemaStatements = [
   )`,
   `CREATE INDEX IF NOT EXISTS project_assets_room_idx ON project_assets(room_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS project_assets_object_idx ON project_assets(object_key)`,
+  `CREATE TABLE IF NOT EXISTS editor_presence (
+    room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    cursor_line INTEGER NOT NULL DEFAULT 1,
+    cursor_column INTEGER NOT NULL DEFAULT 1,
+    selection_end_line INTEGER NOT NULL DEFAULT 1,
+    selection_end_column INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(room_id, user_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS editor_presence_room_idx ON editor_presence(room_id, updated_at)`,
+  `CREATE TABLE IF NOT EXISTS live_file_drafts (
+    room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    base_build_id TEXT NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
+    updated_by TEXT NOT NULL REFERENCES users(id),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(room_id, path)
+  )`,
+  `CREATE INDEX IF NOT EXISTS live_file_drafts_room_idx ON live_file_drafts(room_id, updated_at)`,
+  `CREATE TABLE IF NOT EXISTS file_leases (
+    room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(room_id, path)
+  )`,
+  `CREATE INDEX IF NOT EXISTS file_leases_user_idx ON file_leases(user_id)`,
+  `CREATE TABLE IF NOT EXISTS playtest_links (
+    id TEXT PRIMARY KEY NOT NULL,
+    room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    build_id TEXT NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    label TEXT NOT NULL DEFAULT 'External playtest',
+    token_hash TEXT NOT NULL,
+    token_prefix TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS playtest_links_token_unique ON playtest_links(token_hash)`,
+  `CREATE INDEX IF NOT EXISTS playtest_links_room_idx ON playtest_links(room_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS playtest_feedback (
+    id TEXT PRIMARY KEY NOT NULL,
+    link_id TEXT NOT NULL REFERENCES playtest_links(id) ON DELETE CASCADE,
+    display_name TEXT NOT NULL DEFAULT 'Playtester',
+    rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS playtest_feedback_link_idx ON playtest_feedback(link_id, created_at)`,
   `CREATE TABLE IF NOT EXISTS votes (
     build_id TEXT NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

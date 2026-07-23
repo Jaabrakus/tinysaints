@@ -1,11 +1,16 @@
-import { and, asc, desc, eq, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { getChatGPTUser } from "../app/chatgpt-auth";
 import { ensureDatabase, getDb } from "../db";
 import {
   agentTokens,
   buildFiles,
   builds,
+  editorPresence,
+  fileLeases,
+  liveFileDrafts,
   messages,
+  playtestFeedback,
+  playtestLinks,
   projectAssets,
   roomMembers,
   rooms,
@@ -601,6 +606,193 @@ async function copyProjectAssets(sourceRoomId: string, targetRoomId: string) {
   );
 }
 
+export async function syncEditorPresence(
+  slugValue: string,
+  identity: Identity,
+  input: {
+    path: string;
+    baseBuildId: string;
+    cursorLine?: number;
+    cursorColumn?: number;
+    selectionEndLine?: number;
+    selectionEndColumn?: number;
+    content?: string;
+    expectedDraftRevision?: number;
+  },
+) {
+  const room = await getRoomForUser(slugValue, identity);
+  let path: string;
+  try {
+    path = validateArtifactPath(input.path);
+  } catch (error) {
+    throw new RoomError(error instanceof Error ? error.message : "That editor path is invalid.");
+  }
+  if (!input.baseBuildId.trim()) throw new RoomError("The editor build is missing.");
+  if (input.content !== undefined && new TextEncoder().encode(input.content).byteLength > 65_536) {
+    throw new RoomError("A live file draft may be at most 64 KB.", 413);
+  }
+  const number = (value: number | undefined) =>
+    Number.isSafeInteger(value) ? Math.max(1, Math.min(Number(value), 1_000_000)) : 1;
+  const db = getDb();
+  const [build] = await db
+    .select({ id: builds.id })
+    .from(builds)
+    .where(and(eq(builds.id, input.baseBuildId), eq(builds.roomId, room.id)))
+    .limit(1);
+  if (!build) throw new RoomError("The room moved to a different source build.", 409);
+  const [baseFile] = await db
+    .select({ content: buildFiles.content })
+    .from(buildFiles)
+    .where(and(eq(buildFiles.buildId, build.id), eq(buildFiles.path, path)))
+    .limit(1);
+
+  await db.batch([
+    db.delete(fileLeases).where(sql`${fileLeases.expiresAt} < CURRENT_TIMESTAMP`),
+    db
+      .delete(fileLeases)
+      .where(and(eq(fileLeases.roomId, room.id), eq(fileLeases.userId, identity.id), ne(fileLeases.path, path))),
+    db
+      .insert(editorPresence)
+      .values({
+        roomId: room.id,
+        userId: identity.id,
+        path,
+        cursorLine: number(input.cursorLine),
+        cursorColumn: number(input.cursorColumn),
+        selectionEndLine: number(input.selectionEndLine),
+        selectionEndColumn: number(input.selectionEndColumn),
+      })
+      .onConflictDoUpdate({
+        target: [editorPresence.roomId, editorPresence.userId],
+        set: {
+          path,
+          cursorLine: number(input.cursorLine),
+          cursorColumn: number(input.cursorColumn),
+          selectionEndLine: number(input.selectionEndLine),
+          selectionEndColumn: number(input.selectionEndColumn),
+          updatedAt: nowSql(),
+        },
+      }),
+    db
+      .insert(fileLeases)
+      .values({
+        roomId: room.id,
+        path,
+        userId: identity.id,
+        expiresAt: sql`datetime('now', '+15 seconds')`,
+      })
+      .onConflictDoUpdate({
+        target: [fileLeases.roomId, fileLeases.path],
+        set: {
+          userId: identity.id,
+          expiresAt: sql`datetime('now', '+15 seconds')`,
+          updatedAt: nowSql(),
+        },
+        setWhere: or(
+          eq(fileLeases.userId, identity.id),
+          sql`${fileLeases.expiresAt} < CURRENT_TIMESTAMP`,
+        ),
+      }),
+  ]);
+
+  let [draft] = await db
+    .select()
+    .from(liveFileDrafts)
+    .where(and(eq(liveFileDrafts.roomId, room.id), eq(liveFileDrafts.path, path)))
+    .limit(1);
+  if (!draft || draft.baseBuildId !== build.id) {
+    await db
+      .insert(liveFileDrafts)
+      .values({
+        roomId: room.id,
+        path,
+        baseBuildId: build.id,
+        content: baseFile?.content ?? "",
+        revision: 0,
+        updatedBy: identity.id,
+      })
+      .onConflictDoUpdate({
+        target: [liveFileDrafts.roomId, liveFileDrafts.path],
+        set: {
+          baseBuildId: build.id,
+          content: baseFile?.content ?? "",
+          revision: 0,
+          updatedBy: identity.id,
+          updatedAt: nowSql(),
+        },
+      });
+    [draft] = await db
+      .select()
+      .from(liveFileDrafts)
+      .where(and(eq(liveFileDrafts.roomId, room.id), eq(liveFileDrafts.path, path)))
+      .limit(1);
+  }
+
+  const [lease] = await db
+    .select({ userId: fileLeases.userId, displayName: users.displayName })
+    .from(fileLeases)
+    .innerJoin(users, eq(fileLeases.userId, users.id))
+    .where(and(eq(fileLeases.roomId, room.id), eq(fileLeases.path, path), sql`${fileLeases.expiresAt} >= CURRENT_TIMESTAMP`))
+    .limit(1);
+  let conflict = false;
+  if (input.content !== undefined) {
+    if (lease?.userId !== identity.id) {
+      throw new RoomError(`${lease?.displayName ?? "Another maker"} owns ${path} right now.`, 423);
+    }
+    const expected = Number.isSafeInteger(input.expectedDraftRevision)
+      ? Number(input.expectedDraftRevision)
+      : draft?.revision ?? 0;
+    const [saved] = await db
+      .update(liveFileDrafts)
+      .set({
+        content: input.content,
+        revision: sql`${liveFileDrafts.revision} + 1`,
+        updatedBy: identity.id,
+        updatedAt: nowSql(),
+      })
+      .where(and(
+        eq(liveFileDrafts.roomId, room.id),
+        eq(liveFileDrafts.path, path),
+        eq(liveFileDrafts.baseBuildId, build.id),
+        eq(liveFileDrafts.revision, expected),
+      ))
+      .returning();
+    if (saved) draft = saved;
+    else {
+      conflict = true;
+      [draft] = await db
+        .select()
+        .from(liveFileDrafts)
+        .where(and(eq(liveFileDrafts.roomId, room.id), eq(liveFileDrafts.path, path)))
+        .limit(1);
+    }
+  }
+
+  const collaborators = await db
+    .select({
+      userId: editorPresence.userId,
+      displayName: users.displayName,
+      path: editorPresence.path,
+      cursorLine: editorPresence.cursorLine,
+      cursorColumn: editorPresence.cursorColumn,
+      selectionEndLine: editorPresence.selectionEndLine,
+      selectionEndColumn: editorPresence.selectionEndColumn,
+      updatedAt: editorPresence.updatedAt,
+    })
+    .from(editorPresence)
+    .innerJoin(users, eq(editorPresence.userId, users.id))
+    .where(and(eq(editorPresence.roomId, room.id), sql`${editorPresence.updatedAt} >= datetime('now', '-20 seconds')`))
+    .orderBy(asc(users.displayName));
+  return {
+    conflict,
+    draft: draft
+      ? { content: draft.content, revision: draft.revision, baseBuildId: draft.baseBuildId, updatedBy: draft.updatedBy }
+      : null,
+    lease: lease ? { userId: lease.userId, displayName: lease.displayName, mine: lease.userId === identity.id } : null,
+    collaborators,
+  };
+}
+
 export async function getHomeRoomState(identity: Identity) {
   await ensureDatabase();
   await upsertUser(identity);
@@ -1192,6 +1384,147 @@ export async function getPlayableProjectSnapshot(
   };
 }
 
+export async function createPlaytestLink(
+  slugValue: string,
+  identity: Identity,
+  rawLabel: string,
+) {
+  const room = await getRoomForUser(slugValue, identity);
+  if (room.ownerId !== identity.id) throw new RoomError("Only the room owner can create public playtests.", 403);
+  const db = getDb();
+  const [build] = await db
+    .select()
+    .from(builds)
+    .where(and(eq(builds.roomId, room.id), eq(builds.status, "published")))
+    .orderBy(desc(builds.version))
+    .limit(1);
+  if (!build) throw new RoomError("Publish a build before sharing a playtest.", 409);
+  const [count] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(playtestLinks)
+    .where(and(eq(playtestLinks.roomId, room.id), isNull(playtestLinks.revokedAt)));
+  if (Number(count?.count ?? 0) >= 12) throw new RoomError("Revoke an older playtest link first.", 409);
+  const token = `play_${randomToken()}`;
+  const link = {
+    id: crypto.randomUUID(),
+    roomId: room.id,
+    buildId: build.id,
+    createdBy: identity.id,
+    label: cleanText(rawLabel, 60) || `Playtest v${build.version}`,
+    tokenHash: await sha256(token),
+    tokenPrefix: `${token.slice(0, 14)}…`,
+    expiresAt: sql<string>`datetime('now', '+14 days')`,
+  };
+  await db.insert(playtestLinks).values(link);
+  return { token, buildVersion: build.version, label: link.label };
+}
+
+export async function revokePlaytestLink(slugValue: string, identity: Identity, linkId: string) {
+  const room = await getRoomForUser(slugValue, identity);
+  if (room.ownerId !== identity.id) throw new RoomError("Only the room owner can revoke playtests.", 403);
+  await getDb()
+    .update(playtestLinks)
+    .set({ revokedAt: nowSql() })
+    .where(and(eq(playtestLinks.id, linkId.trim()), eq(playtestLinks.roomId, room.id)));
+}
+
+export async function getPlaytestDashboard(slugValue: string, identity: Identity) {
+  const room = await getRoomForUser(slugValue, identity);
+  const db = getDb();
+  const links = await db
+    .select({
+      id: playtestLinks.id,
+      label: playtestLinks.label,
+      tokenPrefix: playtestLinks.tokenPrefix,
+      buildId: playtestLinks.buildId,
+      version: builds.version,
+      expiresAt: playtestLinks.expiresAt,
+      revokedAt: playtestLinks.revokedAt,
+      createdAt: playtestLinks.createdAt,
+    })
+    .from(playtestLinks)
+    .innerJoin(builds, eq(playtestLinks.buildId, builds.id))
+    .where(eq(playtestLinks.roomId, room.id))
+    .orderBy(desc(playtestLinks.createdAt))
+    .limit(30);
+  const feedback = await db
+    .select({
+      id: playtestFeedback.id,
+      linkId: playtestFeedback.linkId,
+      displayName: playtestFeedback.displayName,
+      rating: playtestFeedback.rating,
+      body: playtestFeedback.body,
+      createdAt: playtestFeedback.createdAt,
+    })
+    .from(playtestFeedback)
+    .innerJoin(playtestLinks, eq(playtestFeedback.linkId, playtestLinks.id))
+    .where(eq(playtestLinks.roomId, room.id))
+    .orderBy(desc(playtestFeedback.createdAt))
+    .limit(100);
+  return { canManage: room.ownerId === identity.id, links, feedback };
+}
+
+export async function getPublicPlaytestSnapshot(rawToken: string) {
+  await ensureDatabase();
+  const token = rawToken.trim();
+  if (!/^play_[0-9a-f]{64}$/.test(token)) throw new RoomError("That playtest link is invalid.", 404);
+  const db = getDb();
+  const [link] = await db
+    .select({
+      id: playtestLinks.id,
+      label: playtestLinks.label,
+      roomId: playtestLinks.roomId,
+      roomSlug: rooms.slug,
+      roomName: rooms.name,
+      buildId: playtestLinks.buildId,
+      expiresAt: playtestLinks.expiresAt,
+      revokedAt: playtestLinks.revokedAt,
+    })
+    .from(playtestLinks)
+    .innerJoin(rooms, eq(playtestLinks.roomId, rooms.id))
+    .where(and(
+      eq(playtestLinks.tokenHash, await sha256(token)),
+      isNull(playtestLinks.revokedAt),
+      sql`${playtestLinks.expiresAt} > CURRENT_TIMESTAMP`,
+    ))
+    .limit(1);
+  if (!link) throw new RoomError("That playtest expired or was revoked.", 404);
+  const [build] = await db.select().from(builds).where(eq(builds.id, link.buildId)).limit(1);
+  if (!build) throw new RoomError("That playable build is unavailable.", 404);
+  return {
+    link: { id: link.id, label: link.label, expiresAt: link.expiresAt },
+    room: { slug: link.roomSlug, name: link.roomName },
+    build: { id: build.id, version: build.version, status: build.status, name: build.name },
+    files: asArtifactSourceFiles(await ensureBuildFiles(build)),
+    assets: await db.select().from(projectAssets).where(eq(projectAssets.roomId, link.roomId)).orderBy(asc(projectAssets.createdAt)),
+  };
+}
+
+export async function submitPlaytestFeedback(
+  rawToken: string,
+  input: { displayName: string; rating: number; body: string },
+) {
+  const snapshot = await getPublicPlaytestSnapshot(rawToken);
+  const rating = Number(input.rating);
+  const body = cleanText(input.body, 1200);
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5 || !body) {
+    throw new RoomError("Add a 1–5 rating and a short playtest note.");
+  }
+  const db = getDb();
+  const [count] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(playtestFeedback)
+    .where(eq(playtestFeedback.linkId, snapshot.link.id));
+  if (Number(count?.count ?? 0) >= 250) throw new RoomError("This playtest has collected enough feedback.", 409);
+  await db.insert(playtestFeedback).values({
+    id: crypto.randomUUID(),
+    linkId: snapshot.link.id,
+    displayName: cleanText(input.displayName, 60) || "Playtester",
+    rating,
+    body,
+  });
+}
+
 export async function addMessage(
   slugValue: string,
   identity: Identity,
@@ -1260,7 +1593,7 @@ export async function createRoom(
       rationale: "A room needs something real to play with or use before the first proposal.",
       summary:
         projectTemplate === "game"
-          ? "A playable Canvas 2D project with team work lanes."
+          ? "A playable Phaser 4.2 project with team work lanes."
           : "A small interactive application starting point.",
       changesJson: JSON.stringify(
         projectTemplate === "game"
@@ -1306,7 +1639,7 @@ export async function stageAgentProjectPatch(
     agentLabel?: string;
     title?: string;
     summary?: string;
-    sourceKind?: "personal-agent" | "convergence";
+    sourceKind?: "personal-agent" | "project-agent" | "convergence";
     rationale?: string;
     changeNotes?: string[];
   },
@@ -1339,9 +1672,12 @@ export async function stageAgentProjectPatch(
     throw new RoomError("An agent proposal cannot change the same path twice.");
   }
   const isConvergence = input.sourceKind === "convergence";
-  const isPersonalAgent = !isConvergence && Boolean(input.agentLabel?.trim());
+  const isProjectAgent = input.sourceKind === "project-agent";
+  const isPersonalAgent = !isConvergence && !isProjectAgent && Boolean(input.agentLabel?.trim());
   const agentLabel = isConvergence
     ? "Convergence agent"
+    : isProjectAgent
+    ? "Shared project AI"
     : isPersonalAgent
     ? cleanText(input.agentLabel!, 80) || "Personal agent"
     : "Shared editor";
@@ -1355,6 +1691,23 @@ export async function stageAgentProjectPatch(
 
   const room = await getRoomForUser(slugValue, identity);
   const db = getDb();
+  if (!input.sourceKind) {
+    for (const change of changes) {
+      const [lease] = await db
+        .select({ userId: fileLeases.userId, displayName: users.displayName })
+        .from(fileLeases)
+        .innerJoin(users, eq(fileLeases.userId, users.id))
+        .where(and(
+          eq(fileLeases.roomId, room.id),
+          eq(fileLeases.path, change.path),
+          sql`${fileLeases.expiresAt} >= CURRENT_TIMESTAMP`,
+        ))
+        .limit(1);
+      if (lease && lease.userId !== identity.id) {
+        throw new RoomError(`${lease.displayName} owns ${change.path} right now. Wait for the live lease or work in a fork.`, 423);
+      }
+    }
+  }
   const [publishedRows, stagedRows, maxVersionRows] = await Promise.all([
     db
       .select()
@@ -1448,11 +1801,11 @@ export async function stageAgentProjectPatch(
       roomId: sql<string>`${room.id}`.as("room_id"),
       version: sql<number>`${nextVersion}`.as("version"),
       status: sql<string>`${"staged"}`.as("status"),
-      sourceKind: sql<string>`${isConvergence ? "convergence" : isPersonalAgent ? "personal-agent" : "manual"}`.as("source_kind"),
-      agentLabel: sql<string | null>`${isPersonalAgent || isConvergence ? agentLabel : null}`.as("agent_label"),
+      sourceKind: sql<string>`${isConvergence ? "convergence" : isProjectAgent ? "project-agent" : isPersonalAgent ? "personal-agent" : "manual"}`.as("source_kind"),
+      agentLabel: sql<string | null>`${isPersonalAgent || isProjectAgent || isConvergence ? agentLabel : null}`.as("agent_label"),
       name: sql<string>`${base.name}`.as("name"),
       proposalTitle: sql<string>`${cleanText(input.title ?? `${agentLabel}: ${changes.length} file proposal`, 100)}`.as("proposal_title"),
-      rationale: sql<string>`${cleanText(input.rationale ?? (isConvergence ? `${agentLabel} compared the team's presented forks and submitted one combined patch for room review.` : isPersonalAgent ? `${identity.displayName}'s ${agentLabel} submitted a whole-project patch for room review.` : `${identity.displayName} saved a source-level change for the room to review.`), 500)}`.as("rationale"),
+      rationale: sql<string>`${cleanText(input.rationale ?? (isConvergence ? `${agentLabel} compared the team's presented forks and submitted one combined patch for room review.` : isPersonalAgent || isProjectAgent ? `${identity.displayName}'s ${agentLabel} submitted a whole-project patch for room review.` : `${identity.displayName} saved a source-level change for the room to review.`), 500)}`.as("rationale"),
       summary: sql<string>`${cleanText(input.summary ?? `${changes.length} project file${changes.length === 1 ? "" : "s"} proposed by ${agentLabel}.`, 240)}`.as("summary"),
       changesJson: sql<string>`${JSON.stringify([
         ...(suppliedChangeNotes.length > 0 ? suppliedChangeNotes : changeLabels.slice(0, 12)),
@@ -2337,6 +2690,35 @@ export async function getGenerationContext(
     workingFiles,
     stagedId: stagedRows[0]?.id ?? null,
     stagedVoterIds,
+    messages: recentMessages,
+  };
+}
+
+export async function getProjectAgentContext(slugValue: string, identity: Identity) {
+  const room = await getRoomForUser(slugValue, identity);
+  const db = getDb();
+  const [workingRows, recentMessages] = await Promise.all([
+    db
+      .select()
+      .from(builds)
+      .where(and(eq(builds.roomId, room.id), sql`${builds.status} IN ('staged', 'published')`))
+      .orderBy(sql`CASE WHEN ${builds.status} = 'staged' THEN 0 ELSE 1 END`, desc(builds.version))
+      .limit(1),
+    db
+      .select({ author: users.displayName, body: messages.body })
+      .from(messages)
+      .innerJoin(users, eq(messages.authorId, users.id))
+      .where(eq(messages.roomId, room.id))
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(30),
+  ]);
+  const working = workingRows[0];
+  if (!working) throw new RoomError("Publish a starting build before asking the project AI.", 409);
+  recentMessages.reverse();
+  return {
+    room,
+    working,
+    files: asArtifactSourceFiles(await ensureBuildFiles(working)),
     messages: recentMessages,
   };
 }

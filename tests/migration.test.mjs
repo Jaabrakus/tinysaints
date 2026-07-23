@@ -144,11 +144,37 @@ test("upgrades the deployed schema with immutable source snapshots", async () =>
     /CHECK constraint failed/,
   );
 
+  database.exec(await migration("0005_live_collaboration.sql"));
+  database.prepare(
+    "INSERT INTO editor_presence (room_id, user_id, path, cursor_line, cursor_column) VALUES (?, ?, ?, ?, ?)",
+  ).run("room-1", "user-1", "src/app.js", 4, 9);
+  database.prepare(
+    "INSERT INTO live_file_drafts (room_id, path, base_build_id, content, updated_by) VALUES (?, ?, ?, ?, ?)",
+  ).run("room-1", "src/app.js", "build-1", "const live = true", "user-1");
+  database.prepare(
+    "INSERT INTO file_leases (room_id, path, user_id, expires_at) VALUES (?, ?, ?, datetime('now', '+15 seconds'))",
+  ).run("room-1", "src/app.js", "user-1");
+  database.prepare(
+    "INSERT INTO playtest_links (id, room_id, build_id, created_by, label, token_hash, token_prefix, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', '+14 days'))",
+  ).run("link-1", "room-1", "build-1", "user-1", "Team test", "9".repeat(64), "play_9999…");
+  database.prepare(
+    "INSERT INTO playtest_feedback (id, link_id, display_name, rating, body) VALUES (?, ?, ?, ?, ?)",
+  ).run("feedback-1", "link-1", "Tester", 5, "Movement feels good");
+  assert.equal(database.prepare("SELECT cursor_line FROM editor_presence").get().cursor_line, 4);
+  assert.throws(
+    () => database.prepare(
+      "INSERT INTO playtest_feedback (id, link_id, display_name, rating, body) VALUES (?, ?, ?, ?, ?)",
+    ).run("feedback-bad", "link-1", "Tester", 6, "bad"),
+    /CHECK constraint failed/,
+  );
+
   database.prepare("DELETE FROM builds WHERE id = ?").run("build-1");
   assert.equal(
     database.prepare("SELECT count(*) AS count FROM build_files").get().count,
     0,
   );
+  assert.equal(database.prepare("SELECT count(*) AS count FROM playtest_links").get().count, 0);
+  assert.equal(database.prepare("SELECT count(*) AS count FROM live_file_drafts").get().count, 0);
   assert.deepEqual(database.prepare("PRAGMA foreign_key_check").all(), []);
   database.close();
 });

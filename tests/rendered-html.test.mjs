@@ -7,13 +7,16 @@ async function source(path) {
 }
 
 test("requires identity and drives the product from persisted room state", async () => {
-  const [page, client, roomRoute, roomService, convergenceRoute, playRoute] = await Promise.all([
+  const [page, client, roomRoute, roomService, convergenceRoute, playRoute, presenceRoute, projectAgentRoute, publicPlayRoute] = await Promise.all([
     source("../app/page.tsx"),
     source("../app/RoomClient.tsx"),
     source("../app/api/room/route.ts"),
     source("../lib/room-service.ts"),
     source("../app/api/converge/route.ts"),
     source("../app/api/play/route.ts"),
+    source("../app/api/presence/route.ts"),
+    source("../app/api/project-agent/route.ts"),
+    source("../app/api/public-play/route.ts"),
   ]);
 
   assert.match(page, /requireChatGPTUser\("\/"\)/);
@@ -67,6 +70,15 @@ test("requires identity and drives the product from persisted room state", async
   assert.match(playRoute, /globalThis\.makeRoomAssets/);
   assert.match(playRoute, /frame-ancestors 'self'/);
   assert.match(roomService, /presentedViewer/);
+  assert.match(presenceRoute, /syncEditorPresence/);
+  assert.match(client, /remote-cursor-caret/);
+  assert.match(client, /\/api\/presence/);
+  assert.match(projectAgentRoute, /generateProjectPatch/);
+  assert.match(projectAgentRoute, /sourceKind: "project-agent"/);
+  assert.match(client, /SHARED WHOLE-PROJECT AI/);
+  assert.match(publicPlayRoute, /getPublicPlaytestSnapshot/);
+  assert.match(publicPlayRoute, /connect-src 'none'/);
+  assert.match(client, /create 14-day link/);
   assert.doesNotMatch(client, /const\s+(messages|rooms|members)\s*=\s*\[/);
 });
 
@@ -92,7 +104,7 @@ test("uses canonical server context and fails honestly without Kimi", async () =
 });
 
 test("keeps secrets server-side and generated code inside an opaque sandbox", async () => {
-  const [client, artifact, hosting, migration, sourceMigration, workspaceMigration, agentMigration, assetMigration, agentRoute, assetRoute, mcpRoute, notices] = await Promise.all([
+  const [client, artifact, hosting, migration, sourceMigration, workspaceMigration, agentMigration, assetMigration, collaborationMigration, agentRoute, assetRoute, mcpRoute, notices] = await Promise.all([
     source("../app/RoomClient.tsx"),
     source("../lib/starter-artifact.ts"),
     source("../.openai/hosting.json"),
@@ -101,6 +113,7 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
     source("../drizzle/0002_previous_krista_starr.sql"),
     source("../drizzle/0003_complex_skaar.sql"),
     source("../drizzle/0004_flat_clea.sql"),
+    source("../drizzle/0005_live_collaboration.sql"),
     source("../app/api/agent/route.ts"),
     source("../app/api/assets/route.ts"),
     source("../app/api/mcp/route.ts"),
@@ -128,6 +141,10 @@ test("keeps secrets server-side and generated code inside an opaque sandbox", as
   assert.match(workspaceMigration, /__new_build_files/);
   assert.match(agentMigration, /CREATE TABLE `agent_tokens`/);
   assert.match(assetMigration, /CREATE TABLE `project_assets`/);
+  assert.match(collaborationMigration, /CREATE TABLE `editor_presence`/);
+  assert.match(collaborationMigration, /CREATE TABLE `live_file_drafts`/);
+  assert.match(collaborationMigration, /CREATE TABLE `playtest_links`/);
+  assert.match(collaborationMigration, /CREATE TABLE `playtest_feedback`/);
   assert.match(assetRoute, /env\.UPLOADS/);
   assert.match(assetRoute, /5 \* 1024 \* 1024/);
   assert.match(assetRoute, /getProjectAssetRecord/);

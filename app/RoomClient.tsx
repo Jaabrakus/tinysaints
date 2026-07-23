@@ -138,6 +138,28 @@ type EditorStatus = {
   message: string;
 } | null;
 
+type LiveEditorState = {
+  conflict: boolean;
+  draft: { content: string; revision: number; baseBuildId: string; updatedBy: string } | null;
+  lease: { userId: string; displayName: string; mine: boolean } | null;
+  collaborators: Array<{
+    userId: string;
+    displayName: string;
+    path: string;
+    cursorLine: number;
+    cursorColumn: number;
+    selectionEndLine: number;
+    selectionEndColumn: number;
+    updatedAt: string;
+  }>;
+};
+
+type PlaytestDashboard = {
+  canManage: boolean;
+  links: Array<{ id: string; label: string; tokenPrefix: string; buildId: string; version: number; expiresAt: string; revokedAt: string | null; createdAt: string }>;
+  feedback: Array<{ id: string; linkId: string; displayName: string; rating: number; body: string; createdAt: string }>;
+};
+
 type Props = {
   initialUser: { displayName: string };
   initialSlug: string;
@@ -154,6 +176,7 @@ function proposalSourceLabel(sourceKind: string) {
   if (sourceKind === "kimi") return "KIMI SYNTHESIS";
   if (sourceKind === "personal-agent") return "PERSONAL AGENT";
   if (sourceKind === "convergence") return "CONVERGENCE AGENT";
+  if (sourceKind === "project-agent") return "SHARED PROJECT AI";
   if (sourceKind === "fork-merge") return "FORK CONVERGENCE";
   return sourceKind.replaceAll("-", " ").toUpperCase() || "ROOM PATCH";
 }
@@ -326,16 +349,28 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       : window.localStorage.getItem("make-room-agent-model") ?? "qwen3:4b",
   );
   const [agentInstruction, setAgentInstruction] = useState("");
+  const [projectAgentOpen, setProjectAgentOpen] = useState(false);
+  const [projectAgentInstruction, setProjectAgentInstruction] = useState("");
   const [gatewayOpen, setGatewayOpen] = useState(false);
   const [agentTokenName, setAgentTokenName] = useState("My coding agent");
   const [revealedAgentToken, setRevealedAgentToken] = useState<string | null>(null);
   const [siteOrigin, setSiteOrigin] = useState("");
   const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [liveEditor, setLiveEditor] = useState<LiveEditorState | null>(null);
+  const [playtestOpen, setPlaytestOpen] = useState(false);
+  const [playtestDashboard, setPlaytestDashboard] = useState<PlaytestDashboard | null>(null);
+  const [playtestLabel, setPlaytestLabel] = useState("Team playtest");
+  const [revealedPlaytestLink, setRevealedPlaytestLink] = useState<string | null>(null);
   const loadSequence = useRef(0);
   const saveSourceProposalRef = useRef<() => void>(() => undefined);
   const conversationPane = useRef<HTMLElement>(null);
   const buildPane = useRef<HTMLElement>(null);
   const assetFileInput = useRef<HTMLInputElement>(null);
+  const codeEditor = useRef<Parameters<OnMount>[0] | null>(null);
+  const monacoApi = useRef<Parameters<OnMount>[1] | null>(null);
+  const remoteDecorationIds = useRef<string[]>([]);
+  const cursorPosition = useRef({ line: 1, column: 1, endLine: 1, endColumn: 1 });
+  const liveDraftRevision = useRef(0);
 
   const loadRoom = useCallback(
     async (inviteToken?: string | null) => {
@@ -470,6 +505,32 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     }
   }
 
+  async function runProjectAgent(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!state?.model.configured || !projectAgentInstruction.trim() || busy) return;
+    setBusy("project-agent");
+    setError(null);
+    setNotice("The shared project AI is reading every file and the room thread…");
+    try {
+      const response = await fetch("/api/project-agent", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ slug, instruction: projectAgentInstruction.trim() }),
+      });
+      const nextState = await readResponse<RoomState>(response);
+      setState(nextState);
+      setProjectAgentInstruction("");
+      setProjectAgentOpen(false);
+      setActiveTab("diff");
+      setNotice("The project AI submitted one multi-file proposal · review it before backing");
+    } catch (agentError) {
+      setError(agentError instanceof Error ? agentError.message : "The project AI could not finish.");
+      setNotice("Nothing changed · the current build is still safe");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function vote() {
     if (!state?.staged || busy) return;
     setBusy("vote");
@@ -590,6 +651,66 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       }
     } catch (inviteError) {
       setError(inviteError instanceof Error ? inviteError.message : "The invite could not be created.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function loadPlaytests() {
+    if (!state) return;
+    const response = await fetch(`/api/playtests?room=${encodeURIComponent(slug)}`, { cache: "no-store" });
+    setPlaytestDashboard(await readResponse<PlaytestDashboard>(response));
+  }
+
+  async function togglePlaytests() {
+    const next = !playtestOpen;
+    setPlaytestOpen(next);
+    if (next) {
+      try {
+        await loadPlaytests();
+      } catch (playtestError) {
+        setError(playtestError instanceof Error ? playtestError.message : "Playtests could not load.");
+      }
+    }
+  }
+
+  async function createPublicPlaytest(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!state || busy) return;
+    setBusy("playtest-create");
+    try {
+      const response = await fetch("/api/playtests", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "create", room: slug, label: playtestLabel }),
+      });
+      const result = await readResponse<{ created: { token: string }; dashboard: PlaytestDashboard }>(response);
+      const link = `${window.location.origin}/play/${encodeURIComponent(result.created.token)}`;
+      setPlaytestDashboard(result.dashboard);
+      setRevealedPlaytestLink(link);
+      await navigator.clipboard.writeText(link).catch(() => undefined);
+      setNotice("Public playtest link copied · it expires in 14 days");
+    } catch (playtestError) {
+      setError(playtestError instanceof Error ? playtestError.message : "The playtest link could not be created.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function revokePublicPlaytest(linkId: string) {
+    if (busy) return;
+    setBusy(`playtest-revoke-${linkId}`);
+    try {
+      const response = await fetch("/api/playtests", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "revoke", room: slug, linkId }),
+      });
+      setPlaytestDashboard(await readResponse<PlaytestDashboard>(response));
+      setRevealedPlaytestLink(null);
+      setNotice("Playtest link revoked immediately");
+    } catch (playtestError) {
+      setError(playtestError instanceof Error ? playtestError.message : "The playtest could not be revoked.");
     } finally {
       setBusy(null);
     }
@@ -900,6 +1021,8 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   saveSourceProposalRef.current = () => void saveSourceProposal();
 
   const mountCodeEditor: OnMount = (editor, monaco) => {
+    codeEditor.current = editor;
+    monacoApi.current = monaco;
     monaco.editor.defineTheme("make-room", {
       base: "vs-dark",
       inherit: true,
@@ -924,6 +1047,14 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     monaco.editor.setTheme("make-room");
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       saveSourceProposalRef.current();
+    });
+    editor.onDidChangeCursorSelection((event) => {
+      cursorPosition.current = {
+        line: event.selection.positionLineNumber,
+        column: event.selection.positionColumn,
+        endLine: event.selection.selectionStartLineNumber,
+        endColumn: event.selection.selectionStartColumn,
+      };
     });
     editor.focus();
   };
@@ -1029,6 +1160,94 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       (activeSourceDraft.expectedRevision !== state.room.revision ||
         activeSourceDraft.baseBuildId !== visibleBuild?.id),
   );
+  const fileLeaseIsMine = !liveEditor?.lease || liveEditor.lease.mine;
+  const remoteEditorsOnFile = liveEditor?.collaborators.filter(
+    (collaborator) => collaborator.path === activeSourcePath && collaborator.userId !== state?.user.id,
+  ) ?? [];
+
+  useEffect(() => {
+    if (activeTab !== "code" || !state || !visibleBuild || !activeSourcePath) return;
+    let stopped = false;
+    const sync = async () => {
+      const draftForPath = sourceDrafts[activeSourcePath];
+      const position = cursorPosition.current;
+      try {
+        const response = await fetch("/api/presence", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            slug,
+            path: activeSourcePath,
+            baseBuildId: visibleBuild.id,
+            cursorLine: position.line,
+            cursorColumn: position.column,
+            selectionEndLine: position.endLine,
+            selectionEndColumn: position.endColumn,
+            ...(draftForPath ? {
+              content: draftForPath.content,
+              expectedDraftRevision: liveDraftRevision.current,
+            } : {}),
+          }),
+        });
+        const payload = (await response.json()) as LiveEditorState & { error?: string };
+        if (stopped) return;
+        if (!response.ok && response.status !== 409) throw new Error(payload.error ?? "Presence failed");
+        setLiveEditor(payload);
+        if (payload.draft) liveDraftRevision.current = payload.draft.revision;
+        if (response.status === 409) {
+          setEditorStatus({
+            kind: "conflict",
+            path: activeSourcePath,
+            message: "A newer shared draft exists. Your local text is preserved; reload to reconcile it.",
+          });
+        } else if (!draftForPath && payload.draft) {
+          const sourceFile = getSourceFile(visibleBuild, activeSourcePath);
+          if (sourceFile && payload.draft.content !== sourceFile.content) {
+            setSourceDrafts((current) => ({
+              ...current,
+              [activeSourcePath]: {
+                content: payload.draft!.content,
+                baseContent: sourceFile.content,
+                baseBuildId: visibleBuild.id,
+                expectedRevision: state.room.revision,
+              },
+            }));
+          }
+        }
+        const editor = codeEditor.current;
+        const monaco = monacoApi.current;
+        if (editor && monaco) {
+          remoteDecorationIds.current = editor.deltaDecorations(
+            remoteDecorationIds.current,
+            payload.collaborators
+              .filter((collaborator) => collaborator.path === activeSourcePath && collaborator.userId !== state.user.id)
+              .map((collaborator) => ({
+                range: new monaco.Range(
+                  collaborator.cursorLine,
+                  collaborator.cursorColumn,
+                  collaborator.selectionEndLine,
+                  collaborator.selectionEndColumn,
+                ),
+                options: {
+                  className: "remote-cursor-selection",
+                  beforeContentClassName: "remote-cursor-caret",
+                  hoverMessage: { value: `${collaborator.displayName} is editing here` },
+                },
+              })),
+          );
+        }
+      } catch {
+        // The durable room poll remains available if this short-lived channel misses a beat.
+      }
+    };
+    liveDraftRevision.current = 0;
+    void sync();
+    const interval = window.setInterval(() => void sync(), 1_500);
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }, [activeSourcePath, activeTab, slug, state?.room.revision, state?.user.id, visibleBuild?.id, sourceDrafts]);
   const diffByPath = (() => {
     const result = {} as Record<
       SourcePath,
@@ -1483,6 +1702,11 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                   play ↗
                 </a>
               )}
+              {isGameProject && state?.published && (
+                <button className="quiet-button" type="button" onClick={() => void togglePlaytests()} aria-expanded={playtestOpen}>
+                  share test
+                </button>
+              )}
               <button
                 className="quiet-button"
                 type="button"
@@ -1490,6 +1714,15 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                 aria-expanded={gatewayOpen}
               >
                 agent bridge
+              </button>
+              <button
+                className="quiet-button project-ai-button"
+                type="button"
+                onClick={() => setProjectAgentOpen((current) => !current)}
+                aria-expanded={projectAgentOpen}
+                title={state?.model.configured ? "Ask the shared AI to change multiple project files" : "Configure the room model first"}
+              >
+                project AI ✳
               </button>
               {Boolean(state?.showcase.length) && (
                 <button
@@ -1519,6 +1752,74 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
               </button>
             </div>
           </div>
+
+          {projectAgentOpen && state && (
+            <form className="project-agent-panel" onSubmit={runProjectAgent}>
+              <div>
+                <span>SHARED WHOLE-PROJECT AI</span>
+                <strong>It reads the complete folder, then submits one reviewable multi-file proposal.</strong>
+              </div>
+              <textarea
+                value={projectAgentInstruction}
+                onChange={(event) => setProjectAgentInstruction(event.target.value)}
+                placeholder="Example: wire the uploaded player sprite into the Phaser scene, add collisions, and update the playtest notes…"
+                maxLength={2000}
+                rows={3}
+              />
+              <button
+                type="submit"
+                disabled={!state.model.configured || !projectAgentInstruction.trim() || Boolean(busy)}
+              >
+                {busy === "project-agent" ? "reading the project…" : "propose project patch →"}
+              </button>
+              {!state.model.configured && <small>Add the server-side Moonshot key before running the shared AI.</small>}
+            </form>
+          )}
+
+          {playtestOpen && playtestDashboard && (
+            <section className="playtest-panel" aria-label="External playtests">
+              <div className="playtest-panel__create">
+                <div>
+                  <span>EXTERNAL PLAYTESTING</span>
+                  <strong>Share only the immutable game build—never the studio or source.</strong>
+                </div>
+                {playtestDashboard.canManage && (
+                  <form onSubmit={createPublicPlaytest}>
+                    <input value={playtestLabel} onChange={(event) => setPlaytestLabel(event.target.value)} maxLength={60} />
+                    <button type="submit" disabled={Boolean(busy)}>{busy === "playtest-create" ? "creating…" : "create 14-day link"}</button>
+                  </form>
+                )}
+                {revealedPlaytestLink && (
+                  <div className="playtest-panel__reveal">
+                    <input value={revealedPlaytestLink} readOnly onFocus={(event) => event.currentTarget.select()} />
+                    <button type="button" onClick={() => navigator.clipboard.writeText(revealedPlaytestLink)}>copy</button>
+                  </div>
+                )}
+              </div>
+              <div className="playtest-panel__columns">
+                <div>
+                  <span>ACTIVE LINKS</span>
+                  {playtestDashboard.links.length === 0 && <p>No external playtests yet.</p>}
+                  {playtestDashboard.links.map((link) => (
+                    <article className={link.revokedAt ? "is-revoked" : ""} key={link.id}>
+                      <div><strong>{link.label}</strong><small>v{link.version} · {link.tokenPrefix}</small></div>
+                      {!link.revokedAt && playtestDashboard.canManage && <button type="button" onClick={() => void revokePublicPlaytest(link.id)}>revoke</button>}
+                    </article>
+                  ))}
+                </div>
+                <div>
+                  <span>PLAYTEST REPORTS</span>
+                  {playtestDashboard.feedback.length === 0 && <p>Feedback will arrive here with a rating and note.</p>}
+                  {playtestDashboard.feedback.map((feedback) => (
+                    <article key={feedback.id}>
+                      <div><strong>{feedback.displayName} · {"★".repeat(feedback.rating)}</strong><small>{activityTime(feedback.createdAt)}</small></div>
+                      <p>{feedback.body}</p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            </section>
+          )}
 
           {gatewayOpen && state && (
             <section className="agent-gateway" aria-label="Personal agent gateway">
@@ -1853,6 +2154,17 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                       <strong>{activeSourcePath}</strong>
                     </div>
                     <div className="source-editor__meta">
+                      {liveEditor?.lease && (
+                        <span className={liveEditor.lease.mine ? "source-state source-state--live" : "source-state source-state--locked"}>
+                          {liveEditor.lease.mine ? "you own file" : `${liveEditor.lease.displayName} editing`}
+                        </span>
+                      )}
+                      {remoteEditorsOnFile.map((collaborator) => (
+                        <span className="live-cursor-chip" title={`Line ${collaborator.cursorLine}`} key={collaborator.userId}>
+                          <Avatar id={collaborator.userId} name={collaborator.displayName} small />
+                          L{collaborator.cursorLine}
+                        </span>
+                      ))}
                       {editorIsStale && <span className="source-state source-state--stale">room moved</span>}
                       {editorIsDirty && <span className="source-state source-state--dirty">local draft</span>}
                       <span>r{activeSourceDraft?.expectedRevision ?? state?.room.revision ?? 0}</span>
@@ -1948,13 +2260,15 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                       theme="make-room"
                       value={editorValue}
                       onChange={(value) => {
-                        if ((value?.length ?? 0) <= 65_536) updateSourceDraft(value ?? "");
+                        if (fileLeaseIsMine && (value?.length ?? 0) <= 65_536) updateSourceDraft(value ?? "");
                       }}
                       onMount={mountCodeEditor}
                       loading={<div className="monaco-loading">Opening editor…</div>}
                       options={{
                         ariaLabel: `Source for ${activeSourcePath}`,
                         automaticLayout: true,
+                        readOnly: !fileLeaseIsMine,
+                        readOnlyMessage: { value: `${liveEditor?.lease?.displayName ?? "Another maker"} owns this file right now.` },
                         bracketPairColorization: { enabled: true },
                         fontFamily: "var(--font-code)",
                         fontSize: 13,
@@ -1981,7 +2295,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                     <button
                       type="button"
                       onClick={() => void saveSourceProposal()}
-                      disabled={!editorIsDirty || Boolean(busy)}
+                      disabled={!editorIsDirty || !fileLeaseIsMine || Boolean(busy)}
                     >
                       {busy === "edit-file" ? "saving…" : "save as proposal →"}
                     </button>

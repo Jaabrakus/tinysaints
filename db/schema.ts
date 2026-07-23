@@ -201,6 +201,89 @@ export const projectAssets = sqliteTable(
   ],
 );
 
+export const editorPresence = sqliteTable(
+  "editor_presence",
+  {
+    roomId: text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    path: text("path").notNull(),
+    cursorLine: integer("cursor_line").notNull().default(1),
+    cursorColumn: integer("cursor_column").notNull().default(1),
+    selectionEndLine: integer("selection_end_line").notNull().default(1),
+    selectionEndColumn: integer("selection_end_column").notNull().default(1),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.roomId, table.userId] }),
+    index("editor_presence_room_idx").on(table.roomId, table.updatedAt),
+  ],
+);
+
+export const liveFileDrafts = sqliteTable(
+  "live_file_drafts",
+  {
+    roomId: text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
+    path: text("path").notNull(),
+    baseBuildId: text("base_build_id").notNull().references(() => builds.id, { onDelete: "cascade" }),
+    content: text("content").notNull(),
+    revision: integer("revision").notNull().default(0),
+    updatedBy: text("updated_by").notNull().references(() => users.id),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.roomId, table.path] }),
+    index("live_file_drafts_room_idx").on(table.roomId, table.updatedAt),
+  ],
+);
+
+export const fileLeases = sqliteTable(
+  "file_leases",
+  {
+    roomId: text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
+    path: text("path").notNull(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    expiresAt: text("expires_at").notNull(),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.roomId, table.path] }),
+    index("file_leases_user_idx").on(table.userId),
+  ],
+);
+
+export const playtestLinks = sqliteTable(
+  "playtest_links",
+  {
+    id: text("id").primaryKey(),
+    roomId: text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
+    buildId: text("build_id").notNull().references(() => builds.id, { onDelete: "cascade" }),
+    createdBy: text("created_by").notNull().references(() => users.id),
+    label: text("label").notNull().default("External playtest"),
+    tokenHash: text("token_hash").notNull(),
+    tokenPrefix: text("token_prefix").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    revokedAt: text("revoked_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("playtest_links_token_unique").on(table.tokenHash),
+    index("playtest_links_room_idx").on(table.roomId, table.createdAt),
+  ],
+);
+
+export const playtestFeedback = sqliteTable(
+  "playtest_feedback",
+  {
+    id: text("id").primaryKey(),
+    linkId: text("link_id").notNull().references(() => playtestLinks.id, { onDelete: "cascade" }),
+    displayName: text("display_name").notNull().default("Playtester"),
+    rating: integer("rating").notNull(),
+    body: text("body").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("playtest_feedback_link_idx").on(table.linkId, table.createdAt)],
+);
+
 export const votes = sqliteTable(
   "votes",
   {

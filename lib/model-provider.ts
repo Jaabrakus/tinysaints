@@ -33,6 +33,14 @@ export type ConvergenceGenerationInput = {
     version: number;
     changes: ProjectChange[];
   }>;
+  instruction?: string;
+};
+
+export type ProjectAgentInput = {
+  room: { name: string; note: string };
+  messages: Array<{ author: string; body: string }>;
+  current: { version: number; files: ArtifactSourceFile[] };
+  instruction: string;
 };
 
 export type ConvergenceProposal = {
@@ -341,6 +349,7 @@ export async function generateConvergencePatch(
     })
     .join("\n\n===== NEXT PRESENTED FORK =====\n\n")
     .slice(0, 130_000);
+  const isDirectProjectTask = input.branches.length === 0 && Boolean(input.instruction?.trim());
 
   let response: Response;
   try {
@@ -358,11 +367,15 @@ export async function generateConvergencePatch(
           {
             role: "system",
             content:
-              "You are the convergence agent inside make/room. Compare every explicitly presented team fork against the main room's current project. Preserve compatible contributions, reconcile overlapping ideas using the canonical room conversation, and return the smallest coherent multi-file patch that advances the shared product. A patch is a complete file replacement or deletion, never a diff. Do not publish: your result becomes one proposal humans must inspect, back, and ship. Keep index.html and styles.css. Do not add secrets, external network calls, unsafe JavaScript capabilities, analytics, purchases, or hidden behavior. Return only the strict structured result.",
+              isDirectProjectTask
+                ? "You are the shared whole-project coding agent inside make/room. Read every project file and the recent room conversation, follow the direct task, and return the smallest coherent multi-file patch that completes it. A patch is a complete file replacement or deletion, never a diff. Preserve the project's runtime and package choices. Do not publish: your result becomes one proposal humans inspect, back, and ship. Keep index.html and styles.css. Do not add secrets, external network calls, unsafe JavaScript capabilities, analytics, purchases, or hidden behavior. Return only the strict structured result."
+                : "You are the convergence agent inside make/room. Compare every explicitly presented team fork against the main room's current project. Preserve compatible contributions, reconcile overlapping ideas using the canonical room conversation, and return the smallest coherent multi-file patch that advances the shared product. A patch is a complete file replacement or deletion, never a diff. Do not publish: your result becomes one proposal humans must inspect, back, and ship. Keep index.html and styles.css. Do not add secrets, external network calls, unsafe JavaScript capabilities, analytics, purchases, or hidden behavior. Return only the strict structured result.",
           },
           {
             role: "user",
-            content: `MAIN ROOM\nName: ${input.room.name}\nPurpose: ${input.room.note}\n\nCANONICAL ROOM THREAD\n${thread}\n\nCURRENT MAIN PROJECT · v${input.current.version}\n${currentSource}\n\nPRESENTED FORK CHANGES\n${forkSource}\n\nReturn one integrated patch. Mention which forks or ideas were combined in the change notes. For delete operations, content must be an empty string.`,
+            content: isDirectProjectTask
+              ? `PROJECT\nName: ${input.room.name}\nPurpose: ${input.room.note}\n\nDIRECT TASK\n${input.instruction?.trim().slice(0, 2_000)}\n\nRECENT ROOM THREAD\n${thread}\n\nCOMPLETE CURRENT PROJECT · v${input.current.version}\n${currentSource}\n\nReturn one reviewable multi-file patch that completes the direct task. For delete operations, content must be an empty string.`
+              : `MAIN ROOM\nName: ${input.room.name}\nPurpose: ${input.room.note}\n\nCANONICAL ROOM THREAD\n${thread}\n\nCURRENT MAIN PROJECT · v${input.current.version}\n${currentSource}\n\nPRESENTED FORK CHANGES\n${forkSource}\n\nReturn one integrated patch. Mention which forks or ideas were combined in the change notes. For delete operations, content must be an empty string.`,
           },
         ],
         response_format: {
@@ -448,4 +461,17 @@ export async function generateConvergencePatch(
     changes: value.changes.map((change, index) => requireString(change, `change ${index + 1}`, 140)),
     patches,
   };
+}
+
+export async function generateProjectPatch(input: ProjectAgentInput) {
+  if (!input.instruction.trim()) {
+    throw new ModelProviderError("Give the project AI a concrete task.", 400, "missing_instruction");
+  }
+  return generateConvergencePatch({
+    room: input.room,
+    messages: input.messages,
+    current: input.current,
+    branches: [],
+    instruction: input.instruction,
+  });
 }
