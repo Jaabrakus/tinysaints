@@ -1887,6 +1887,25 @@ textarea:focus-visible {
   min-height: 0;
   flex: 1;
   overflow: hidden;
+  background: #0f100e;
+}
+
+.monaco-loading {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  background: #0f100e;
+  color: var(--faint);
+  font: 9px var(--font-code);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.source-editor__input .monaco-editor,
+.source-editor__input .monaco-editor-background,
+.source-editor__input .monaco-editor .margin {
+  background: #0f100e !important;
 }
 
 .source-editor__input > span {
@@ -2337,6 +2356,95 @@ a.fork-node:hover {
   color: var(--muted);
   font-size: 10px;
   line-height: 1.45;
+}
+
+/* The branch view behaves like a compact source-control panel, not a dashboard. */
+.fork-workspace {
+  background: #10110f;
+}
+
+.fork-workspace__header {
+  min-height: 68px;
+  align-items: center;
+  padding: 11px 14px;
+}
+
+.fork-workspace__header h3 {
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+
+.fork-workspace__header p {
+  display: none;
+}
+
+.fork-workspace__stats span {
+  min-width: 68px;
+  padding: 6px 8px;
+}
+
+.fork-workspace__stats strong {
+  font-size: 11px;
+}
+
+.fork-flow {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 12px 14px 24px;
+  justify-items: stretch;
+}
+
+.fork-flow__level,
+.fork-flow__level--children {
+  width: 100%;
+  max-width: none;
+  justify-items: stretch;
+  gap: 5px;
+}
+
+.fork-flow__level + .fork-flow__level {
+  margin-top: 12px;
+}
+
+.fork-flow__connector {
+  display: none;
+}
+
+.fork-node {
+  width: 100%;
+  min-height: 58px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.fork-node--current::after,
+.fork-node--child::before {
+  display: none;
+}
+
+.fork-node__icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  font-size: 10px;
+}
+
+.fork-children {
+  grid-template-columns: 1fr;
+  gap: 5px;
+}
+
+.fork-flow__actions {
+  justify-content: flex-start;
+}
+
+.fork-empty {
+  width: 100%;
+  justify-items: start;
+  padding: 13px;
+  text-align: left;
 }
 
 .diff-workspace__header {

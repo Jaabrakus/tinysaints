@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import Editor, { type OnMount } from "@monaco-editor/react";
 import { buildDiffLines, diffStats } from "../lib/kimi-code-diff";
 
 type Color = "lime" | "violet" | "coral" | "sky" | "cream";
@@ -254,7 +255,7 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
   const [siteOrigin, setSiteOrigin] = useState("");
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const loadSequence = useRef(0);
-  const editorGutter = useRef<HTMLPreElement>(null);
+  const saveSourceProposalRef = useRef<() => void>(() => undefined);
   const conversationPane = useRef<HTMLElement>(null);
   const buildPane = useRef<HTMLElement>(null);
 
@@ -771,6 +772,37 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
     }
   }
 
+  saveSourceProposalRef.current = () => void saveSourceProposal();
+
+  const mountCodeEditor: OnMount = (editor, monaco) => {
+    monaco.editor.defineTheme("make-room", {
+      base: "vs-dark",
+      inherit: true,
+      rules: [
+        { token: "comment", foreground: "74776f" },
+        { token: "keyword", foreground: "9d8cff" },
+        { token: "string", foreground: "caff45" },
+        { token: "number", foreground: "ff9a7e" },
+      ],
+      colors: {
+        "editor.background": "#0f100e",
+        "editor.foreground": "#c7c9c1",
+        "editorLineNumber.foreground": "#4f524b",
+        "editorLineNumber.activeForeground": "#a4a69e",
+        "editor.lineHighlightBackground": "#171815",
+        "editor.selectionBackground": "#394321",
+        "editorCursor.foreground": "#caff45",
+        "editorIndentGuide.background1": "#23251f",
+        "editorIndentGuide.activeBackground1": "#3a3d35",
+      },
+    });
+    monaco.editor.setTheme("make-room");
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+      saveSourceProposalRef.current();
+    });
+    editor.focus();
+  };
+
   async function removeProjectFile() {
     if (
       !state ||
@@ -858,10 +890,6 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
       (activeSourceDraft.expectedRevision !== state.room.revision ||
         activeSourceDraft.baseBuildId !== visibleBuild?.id),
   );
-  const editorLineNumbers = Array.from(
-    { length: Math.max(1, editorValue.split("\n").length) },
-    (_, index) => index + 1,
-  ).join("\n");
   const diffByPath = (() => {
     const result = {} as Record<
       SourcePath,
@@ -1594,34 +1622,35 @@ export default function RoomClient({ initialUser, initialSlug, signOutPath }: Pr
                     </form>
                   )}
 
-                  <label className="source-editor__input">
-                    <span>Edit {activeSourcePath}</span>
-                    <div className="source-editor__code-area">
-                      <pre ref={editorGutter} className="source-editor__gutter" aria-hidden="true">
-                        {editorLineNumbers}
-                      </pre>
-                      <textarea
-                        value={editorValue}
-                        onChange={(event) => updateSourceDraft(event.target.value)}
-                        onScroll={(event) => {
-                          if (editorGutter.current) {
-                            editorGutter.current.scrollTop = event.currentTarget.scrollTop;
-                          }
-                        }}
-                        onKeyDown={(event) => {
-                          if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-                            event.preventDefault();
-                            void saveSourceProposal();
-                          }
-                        }}
-                        spellCheck={false}
-                        autoCapitalize="off"
-                        autoCorrect="off"
-                        maxLength={65_536}
-                        aria-label={`Source for ${activeSourcePath}`}
-                      />
-                    </div>
-                  </label>
+                  <div className="source-editor__input" aria-label={`Source for ${activeSourcePath}`}>
+                    <Editor
+                      height="100%"
+                      path={`file:///artifact/${activeSourcePath}`}
+                      language={activeSourceFile?.language === "text" ? "plaintext" : activeSourceFile?.language}
+                      theme="make-room"
+                      value={editorValue}
+                      onChange={(value) => {
+                        if ((value?.length ?? 0) <= 65_536) updateSourceDraft(value ?? "");
+                      }}
+                      onMount={mountCodeEditor}
+                      loading={<div className="monaco-loading">Opening editor…</div>}
+                      options={{
+                        ariaLabel: `Source for ${activeSourcePath}`,
+                        automaticLayout: true,
+                        bracketPairColorization: { enabled: true },
+                        fontFamily: "var(--font-code)",
+                        fontSize: 13,
+                        lineHeight: 21,
+                        minimap: { enabled: false },
+                        padding: { top: 12, bottom: 16 },
+                        renderLineHighlight: "all",
+                        scrollBeyondLastLine: false,
+                        smoothScrolling: true,
+                        tabSize: 2,
+                        wordWrap: "off",
+                      }}
+                    />
+                  </div>
 
                   <div className="source-editor__footer">
                     <div>
